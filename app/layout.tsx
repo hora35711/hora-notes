@@ -1,29 +1,24 @@
-import { Geist, Geist_Mono, Inter } from "next/font/google"
-
+// app/layout.tsx
 import "./globals.css"
-import { ThemeProvider } from "@/components/theme-provider"
-import { cn } from "@/lib/utils";
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
+import { AppSidebar } from "@/app/AppSidebar/app-sidebar"
 
-const inter = Inter({subsets:['latin'],variable:'--font-sans'})
-
-const fontMono = Geist_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
-})
-
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode
-}>) {
+export default function RootLayout({ children, }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="en"
-      suppressHydrationWarning
-      className={cn("antialiased", fontMono.variable, "font-sans", inter.variable)}
-    >
+    <html>
       <body>
-        <ThemeProvider>{children}</ThemeProvider>
+        <SidebarProvider>
+          <div className="flex min-h-screen w-full">
+            {/* 左边 Sidebar */}
+            <AppSidebar />
+
+            {/* 右边内容 */}
+            <main className="flex-1 p-4">
+              <SidebarTrigger />
+              {children} {/* 🔥 关键就在这里 */}
+            </main>
+          </div>
+        </SidebarProvider>
       </body>
     </html>
   )
