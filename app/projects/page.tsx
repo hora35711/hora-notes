@@ -1,5 +1,7 @@
 "use client"
 
+// Projects 列表页：展示项目网格、创建弹窗，并对接本地数据库读写。
+
 import Link from "next/link"
 import { useEffect, useMemo, useState } from "react"
 import { Plus } from "lucide-react"

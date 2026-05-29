@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 
-import { sidebarData, loadNotesTree, type NotesTreeNode } from "@/components/sidebar-data"
+import { sidebarData, loadNotesTree, type NoteTreeNode } from "@/components/sidebar-data"
 import { NavMain } from "@/components/nav-main"
 import { NavNotes } from "@/components/nav-notes"
 import { NavMail } from "@/components/nav-mail"
@@ -30,19 +30,28 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 
-// 主 Sidebar：导航使用静态配置，Notes 从 SQLite 动态加载。
+// 主 Sidebar：导航读取静态配置，Notes 通过 DB + IPC 实时同步。
 export function AppSidebar() {
-  // NotesTree 数据源：默认空数组，加载后展示数据库中的树。
-  const [notesTree, setNotesTree] = useState<NotesTreeNode[]>([])
+  // NotesTree 数据源：挂载后从 SQLite 加载并响应文件系统变化。
+  const [notesTree, setNotesTree] = useState<NoteTreeNode[]>(sidebarData.workspace.notesTree)
 
-  // 组件挂载时加载笔记树。
   useEffect(() => {
-    const run = async () => {
+    // 统一刷新方法：启动加载与后续事件都复用。
+    const refreshNotes = async () => {
       const tree = await loadNotesTree()
       setNotesTree(tree)
     }
 
-    void run()
+    void refreshNotes()
+
+    // 订阅主进程推送：notes 文件变化后自动刷新树。
+    const unsubscribe = window.horaDB?.onNotesChanged?.(() => {
+      void refreshNotes()
+    })
+
+    return () => {
+      unsubscribe?.()
+    }
   }, [])
 
   return (
