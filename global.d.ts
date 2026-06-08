@@ -68,6 +68,8 @@ type HoraDBBridge = {
   renameNoteNode: (input: { id: string; title: string }) => Promise<boolean>
   deleteNoteNode: (input: { id: string }) => Promise<boolean>
   moveNoteNode: (input: { id: string; parentId?: string | null }) => Promise<boolean>
+  // 在系统 Finder 中定位指定笔记文件或目录。
+  showNoteInFinder: (noteId: string) => Promise<boolean>
   onNotesChanged: (callback: () => void) => (() => void) | undefined
 }
 

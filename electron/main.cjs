@@ -1,6 +1,7 @@
 // Electron 主进程：启动窗口、注册 IPC，并桥接笔记变更事件。
 const path = require("node:path")
-const { app, BrowserWindow, ipcMain } = require("electron")
+const fs = require("node:fs")
+const { app, BrowserWindow, ipcMain, shell } = require("electron")
 const db = require("./db.cjs")
 
 let mainWindow = null
@@ -14,6 +15,22 @@ function notifyNotesChanged() {
 
 // 注册 IPC：渲染层通过 preload 调用本地数据库方法。
 function registerDbIpc() {
+  ipcMain.handle("shell:notes:showInFinder", (_event, noteId) => {
+    const note = db.getNoteById(noteId)
+    if (!note || !note.filePath) {
+      throw new Error("目标节点不存在")
+    }
+
+    const targetPath = path.join(db.getVaultPath(), note.filePath)
+    if (!fs.existsSync(targetPath)) {
+      throw new Error("目标路径不存在")
+    }
+
+    // 只让系统 Finder 定位当前文件或文件夹，不触发目录刷新或路由变化。
+    shell.showItemInFolder(targetPath)
+    return true
+  })
+
   ipcMain.handle("db:projects:list", () => db.listProjects())
   ipcMain.handle("db:projects:create", (_event, input) => db.createProject(input))
   ipcMain.handle("db:projects:get", (_event, projectId) => db.getProjectById(projectId))

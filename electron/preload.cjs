@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("horaDB", {
   renameNoteNode: (input) => ipcRenderer.invoke("db:notes:rename", input),
   deleteNoteNode: (input) => ipcRenderer.invoke("db:notes:delete", input),
   moveNoteNode: (input) => ipcRenderer.invoke("db:notes:move", input),
+  showNoteInFinder: (noteId) => ipcRenderer.invoke("shell:notes:showInFinder", noteId),
 
   // 前端订阅笔记目录变化：返回取消订阅函数。
   onNotesChanged: (callback) => {

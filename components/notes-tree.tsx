@@ -108,6 +108,16 @@ export function NotesTree({
     return folder.filePath.startsWith(`${item.filePath}/`)
   }
 
+
+  // 在 Finder 中定位当前节点：只调用系统能力，不改变左侧选中、展开或路由。
+  const handleShowInFinder = async (id: string) => {
+    try {
+      await window.horaDB?.showNoteInFinder(id)
+    } catch (error) {
+      console.error("在 Finder 中显示失败", error)
+    }
+  }
+
   // 提交当前动作：根据 action.kind 分发到对应 IPC。
   const handleSubmitAction = async () => {
     if (!action || submitting) return
@@ -185,6 +195,9 @@ export function NotesTree({
               <ContextMenuItem onClick={() => openMove(item.id, item.title)}>
                 移动
               </ContextMenuItem>
+              <ContextMenuItem onClick={() => void handleShowInFinder(item.id)}>
+                在 Finder 中显示
+              </ContextMenuItem>
               <ContextMenuItem onClick={() => openDelete(item.id, item.title)}>
                 删除
               </ContextMenuItem>
@@ -233,6 +246,7 @@ export function NotesTree({
             <ContextMenuItem onClick={() => openCreateFolder(item.id)}>新建文件夹</ContextMenuItem>
             <ContextMenuItem onClick={() => openRename(item.id, item.title)}>重命名</ContextMenuItem>
             <ContextMenuItem onClick={() => openMove(item.id, item.title)}>移动</ContextMenuItem>
+            <ContextMenuItem onClick={() => void handleShowInFinder(item.id)}>在 Finder 中显示</ContextMenuItem>
             <ContextMenuItem onClick={() => openDelete(item.id, item.title)}>删除</ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
