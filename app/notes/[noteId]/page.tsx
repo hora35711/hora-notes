@@ -56,12 +56,27 @@ type EditorTab = {
   noteId: string | null
 }
 
-type NoteFileKind = "markdown" | "drawing"
+type NoteFileKind = "markdown" | "drawing" | "text" | "external"
 
 // 兼容新旧绘图后缀：新格式 .excalidraw.md，老格式 .excalidraw。
 function isDrawingPath(filePath: string | null | undefined) {
   const lower = (filePath || "").toLowerCase()
   return lower.endsWith(".excalidraw.md") || lower.endsWith(".excalidraw")
+}
+
+// 普通文本文件可直接在编辑区编辑，避免使用富文本编辑器改写原始格式。
+function isPlainTextPath(filePath: string | null | undefined) {
+  const lower = (filePath || "").toLowerCase()
+  return [".txt", ".text", ".log", ".csv", ".tsv"].some((suffix) => lower.endsWith(suffix))
+}
+
+// 根据路径决定打开策略：Markdown/绘图内嵌，文本直接编辑，PDF/Office 交给系统默认应用。
+function getNoteFileKind(filePath: string | null | undefined): NoteFileKind {
+  const lower = (filePath || "").toLowerCase()
+  if (isDrawingPath(lower)) return "drawing"
+  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown"
+  if (isPlainTextPath(lower)) return "text"
+  return "external"
 }
 
 // 从绘图文件内容中提取 Excalidraw JSON：
@@ -100,6 +115,8 @@ function buildObsidianExcalidrawMarkdown(sceneJson: string) {
 
 const TABS_STORAGE_KEY = "hora_editor_tabs"
 const ACTIVE_TAB_STORAGE_KEY = "hora_editor_active_tab"
+// 没有 URL open 参数时也需要一个稳定占位，用来区分“关闭后的空白页”和“重新点击打开”。
+const BLANK_ROUTE_NO_OPEN_KEY = "__hora_blank_route_without_open__"
 
 // 笔记编辑页：左侧点击文件后，在右侧展示并编辑。
 export default function NoteEditorPage() {
@@ -120,6 +137,8 @@ export default function NoteEditorPage() {
   const [initialHtml, setInitialHtml] = useState("")
   // 编辑器 HTML：SimpleEditor 输出的当前内容。
   const [editorHtml, setEditorHtml] = useState("")
+  // 文本编辑内容：txt/csv/log 等按纯文本保存，避免富文本转换破坏格式。
+  const [textPreview, setTextPreview] = useState("")
   // 当前路径面包屑。
   const [pathParts, setPathParts] = useState<string[]>([])
   // 当前文件类型：.md 走富文本，.excalidraw.md 走画布。
@@ -194,7 +213,7 @@ export default function NoteEditorPage() {
           setActiveTabId("")
           activeTabIdRef.current = ""
           setBlankRouteNoteId(noteId ?? null)
-          setBlankRouteOpenKey(openKey)
+          setBlankRouteOpenKey(openKey ?? BLANK_ROUTE_NO_OPEN_KEY)
         }
       } catch {
         // 保留注释：本地缓存损坏时回退默认标签。
@@ -257,12 +276,14 @@ export default function NoteEditorPage() {
       if (
         tabs.length === 0 &&
         currentNoteId === blankRouteNoteId &&
-        openKey === blankRouteOpenKey
+        // 只有关闭那一刻的原始路由才保持空白，重新点击同一笔记会带新 openKey 并立即打开内容。
+        (openKey ?? BLANK_ROUTE_NO_OPEN_KEY) === blankRouteOpenKey
       ) {
         setTitle("未打开文件")
         setPathParts([])
         setInitialHtml("")
         setEditorHtml("")
+        setTextPreview("")
         return
       }
 
@@ -274,6 +295,7 @@ export default function NoteEditorPage() {
         setPathParts([])
         setInitialHtml("")
         setEditorHtml("")
+        setTextPreview("")
         setDrawingInitialData(null)
         setDrawingReady(false)
         return
@@ -286,7 +308,7 @@ export default function NoteEditorPage() {
         if (isStale()) return
         if (note && note.nodeType === "file") {
           setTitle(note.title)
-          const nextKind: NoteFileKind = isDrawingPath(note.filePath) ? "drawing" : "markdown"
+          const nextKind = getNoteFileKind(note.filePath)
           setNoteFileKind(nextKind)
           if (tabs.length === 0) {
             const id = `tab-${Date.now()}`
@@ -323,6 +345,22 @@ export default function NoteEditorPage() {
         if (isStale()) return
         setPathParts(parts)
 
+        if (getNoteFileKind(note?.filePath) === "external") {
+          try {
+            // PDF/Word/Excel 等文件交给系统默认应用，避免错误读写二进制内容。
+            await window.horaDB?.openNoteWithDefaultApp(currentNoteId)
+          } catch (openError) {
+            setError(openError instanceof Error ? openError.message : "打开默认应用失败")
+          }
+          if (isStale()) return
+          setInitialHtml("")
+          setEditorHtml("")
+          setTextPreview("")
+          setDrawingInitialData(null)
+          setDrawingReady(false)
+          return
+        }
+
         const text = (await window.horaDB?.readNoteContent(currentNoteId)) as string
         if (isStale()) return
         if (isDrawingPath(note?.filePath)) {
@@ -346,11 +384,20 @@ export default function NoteEditorPage() {
           drawingSceneRef.current = null
           setInitialHtml("")
           setEditorHtml("")
+          setTextPreview("")
+        } else if (getNoteFileKind(note?.filePath) === "text") {
+          // 文本类文件进入纯文本编辑模式，保留原始换行和逗号/制表符结构。
+          setTextPreview(text || "")
+          setInitialHtml("")
+          setEditorHtml("")
+          setDrawingInitialData(null)
+          setDrawingReady(false)
         } else {
           const html = md.render(text || "")
           if (isStale()) return
           setInitialHtml(html)
           setEditorHtml(html)
+          setTextPreview("")
           setDrawingInitialData(null)
           setDrawingReady(false)
         }
@@ -382,7 +429,14 @@ export default function NoteEditorPage() {
 
     try {
       setError(null)
-      if (noteFileKind === "drawing") {
+      if (noteFileKind === "external") {
+        return
+      }
+
+      if (noteFileKind === "text") {
+        // 文本模式直接按原始字符串保存，不经过 Markdown/HTML 转换。
+        await window.horaDB?.saveNoteContent({ noteId: currentNoteId, content: textPreview })
+      } else if (noteFileKind === "drawing") {
         // 绘图模式：将当前场景完整序列化到 .excalidraw.md 文件。
         const scene = drawingSceneRef.current
         const sceneJson = scene
@@ -399,12 +453,12 @@ export default function NoteEditorPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败")
     }
-  }, [editorHtml, noteFileKind, tabs, turndown])
+  }, [editorHtml, noteFileKind, tabs, textPreview, turndown])
 
-  // 绘图模式快捷键桥接：补齐 Markdown 编辑器已有的 Cmd/Ctrl + S 保存行为。
+  // 绘图/文本模式快捷键桥接：补齐 Markdown 编辑器已有的 Cmd/Ctrl + S 保存行为。
   useEffect(() => {
-    // 非绘图模式不挂载快捷键，避免影响现有 Markdown 编辑体验。
-    if (noteFileKind !== "drawing") return
+    // 非绘图/文本模式不挂载快捷键，避免影响现有 Markdown 编辑体验。
+    if (noteFileKind !== "drawing" && noteFileKind !== "text") return
 
     const onKeyDown = (event: KeyboardEvent) => {
       // 同时兼容 macOS Command 与 Windows/Linux Control。
@@ -414,7 +468,7 @@ export default function NoteEditorPage() {
         || event.getModifierState("Control")
       if (!isCommand) return
 
-      // 与 Markdown 一致：Cmd/Ctrl + S 直接保存当前绘图。
+      // 与 Markdown 一致：Cmd/Ctrl + S 直接保存当前绘图或纯文本。
       if (event.key.toLowerCase() === "s") {
         event.preventDefault()
         event.stopPropagation()
@@ -422,7 +476,7 @@ export default function NoteEditorPage() {
       }
     }
 
-    // 使用捕获阶段优先处理，避免被画布内部按键逻辑提前吞掉。
+    // 使用捕获阶段优先处理，避免被画布或文本框内部按键逻辑提前吞掉。
     window.addEventListener("keydown", onKeyDown, true)
     return () => {
       window.removeEventListener("keydown", onKeyDown, true)
@@ -444,6 +498,7 @@ export default function NoteEditorPage() {
     setBlankRouteOpenKey(null)
     setInitialHtml("")
     setEditorHtml("")
+    setTextPreview("")
     setTitle("未命名")
     setPathParts([])
   }
@@ -500,6 +555,7 @@ export default function NoteEditorPage() {
     setPathParts([])
     setInitialHtml("")
     setEditorHtml("")
+    setTextPreview("")
   }
 
   // 切换标签：有绑定笔记就跳转该笔记，没有则停留空白状态。
@@ -513,6 +569,7 @@ export default function NoteEditorPage() {
     // 立即清空旧内容，避免视觉上停留在上一个标签内容。
     setInitialHtml("")
     setEditorHtml("")
+    setTextPreview("")
     setPathParts([])
     setTitle(target?.label || "未命名")
     if (target?.noteId) {
@@ -538,11 +595,12 @@ export default function NoteEditorPage() {
       setTabs([])
       setActiveTabId("")
       setBlankRouteNoteId(noteId ?? null)
-      setBlankRouteOpenKey(openKey)
+      setBlankRouteOpenKey(openKey ?? BLANK_ROUTE_NO_OPEN_KEY)
       setTitle("未打开文件")
       setPathParts([])
       setInitialHtml("")
       setEditorHtml("")
+      setTextPreview("")
       return
     }
 
@@ -571,6 +629,7 @@ export default function NoteEditorPage() {
 
     setInitialHtml("")
     setEditorHtml("")
+    setTextPreview("")
     setTitle(nextActiveTab?.label || "未命名")
     setPathParts([])
   }
@@ -692,6 +751,30 @@ export default function NoteEditorPage() {
                 正在加载绘图...
               </div>
             )}
+          </div>
+        ) : noteFileKind === "text" ? (
+          // 文本编辑：不进入富文本编辑器，保存时直接写回原始纯文本。
+          <textarea
+            value={textPreview}
+            onChange={(event) => setTextPreview(event.target.value)}
+            spellCheck={false}
+            className="h-full w-full resize-none overflow-auto border-0 bg-white p-4 font-mono text-sm leading-6 text-neutral-800 outline-none"
+          />
+        ) : noteFileKind === "external" ? (
+          <div className="flex h-full items-center justify-center p-6 text-center">
+            <div className="max-w-sm space-y-3 text-sm text-neutral-500">
+              <p className="text-base font-medium text-neutral-900">已使用系统默认应用打开</p>
+              <p>该文件类型不适合直接在编辑器中读写，避免损坏原文件。</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  if (noteId) void window.horaDB?.openNoteWithDefaultApp(noteId)
+                }}
+              >
+                再次打开
+              </Button>
+            </div>
           </div>
         ) : (
           <SimpleEditor

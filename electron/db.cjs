@@ -62,22 +62,73 @@ function sha256(text) {
   return crypto.createHash("sha256").update(text, "utf8").digest("hex")
 }
 
-// 计算文件哈希：用于 watcher 的 change/update。
+// 可显示在左侧目录中的常见文件类型：文本尽量内嵌展示，办公文档交给系统默认应用。
+const SUPPORTED_NOTE_FILE_SUFFIXES = [
+  ".excalidraw.md",
+  ".excalidraw",
+  ".md",
+  ".markdown",
+  ".txt",
+  ".text",
+  ".log",
+  ".csv",
+  ".tsv",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".rtf",
+]
+
+// 可按 UTF-8 安全读取的文本文件：二进制文件不进入编辑器读写链路。
+const TEXT_READABLE_NOTE_FILE_SUFFIXES = [
+  ".excalidraw.md",
+  ".excalidraw",
+  ".md",
+  ".markdown",
+  ".txt",
+  ".text",
+  ".log",
+  ".csv",
+  ".tsv",
+]
+
+// 计算文件哈希：使用 Buffer，避免 PDF/Word/Excel 等二进制文件被 UTF-8 转码破坏。
 function sha256File(filePath) {
   if (!fs.existsSync(filePath)) return null
-  const text = fs.readFileSync(filePath, "utf8")
-  return sha256(text)
+  const buffer = fs.readFileSync(filePath)
+  return crypto.createHash("sha256").update(buffer).digest("hex")
 }
 
-// 标题派生：xxx.md / xxx.excalidraw.md => xxx。
+// 取得受支持文件的真实后缀；.excalidraw.md 需要作为组合后缀处理。
+function getSupportedFileSuffix(fileName) {
+  const lower = String(fileName || "").toLowerCase()
+  return SUPPORTED_NOTE_FILE_SUFFIXES.find((suffix) => lower.endsWith(suffix)) || ""
+}
+
+// 去掉已知后缀后作为标题/基础文件名，避免 a.pdf 显示成 a.pdf。
+function stripSupportedFileSuffix(fileName) {
+  const suffix = getSupportedFileSuffix(fileName)
+  return suffix ? fileName.slice(0, -suffix.length) : fileName
+}
+
+// 标题派生：xxx.md / xxx.pdf / xxx.excalidraw.md => xxx。
 function titleFromFileName(fileName) {
-  return fileName.replace(/\.excalidraw\.md$/i, "").replace(/\.md$/i, "")
+  return stripSupportedFileSuffix(fileName)
 }
 
-// 判断是否是受支持的笔记文件。
+// 判断是否是受支持的笔记区文件。
 function isSupportedNoteFileName(fileName) {
-  const lower = fileName.toLowerCase()
-  return lower.endsWith(".md") || lower.endsWith(".excalidraw")
+  return Boolean(getSupportedFileSuffix(fileName))
+}
+
+// 判断是否可以按文本读取，避免二进制文件进入 read/write 文本逻辑。
+function isTextReadableNoteFileName(fileName) {
+  const lower = String(fileName || "").toLowerCase()
+  return TEXT_READABLE_NOTE_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix))
 }
 
 // 判断是否是绘图文件（Obsidian 风格后缀）。
@@ -86,12 +137,10 @@ function isDrawingFileName(fileName) {
   return lower.endsWith(".excalidraw.md") || lower.endsWith(".excalidraw")
 }
 
-// 根据路径保留文件后缀：普通笔记 .md，绘图文件 .excalidraw.md。
+// 根据路径保留真实文件后缀：移动/重命名时不能把 PDF/Word/Excel 误改成 .md。
 function getFileSuffixFromPath(filePath) {
   const fileName = path.posix.basename(filePath || "")
-  if (fileName.toLowerCase().endsWith(".excalidraw.md")) return ".excalidraw.md"
-  if (fileName.toLowerCase().endsWith(".excalidraw")) return ".excalidraw"
-  return ".md"
+  return getSupportedFileSuffix(fileName) || path.posix.extname(fileName) || ".md"
 }
 
 // 生成稳定节点 ID：同一路径保持稳定。
@@ -99,6 +148,11 @@ function buildNodeId(prefix, relativePath) {
   const seed = `${prefix}:${relativePath}`
   const short = crypto.createHash("sha1").update(seed, "utf8").digest("hex").slice(0, 16)
   return `${prefix}_${short}`
+}
+
+// 生成业务实体 ID：项目/需求/任务不依赖文件路径，使用随机种子避免毫秒冲突。
+function buildEntityId(prefix) {
+  return `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`
 }
 
 // 绝对路径 => 相对 vault 路径。
@@ -129,6 +183,253 @@ function ensureNoteSchema(db) {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_note_nodes_file_path_alive
     ON note_nodes(file_path)
     WHERE is_deleted = 0 AND file_path IS NOT NULL
+  `)
+}
+
+// 判断表结构是否已经使用新版 CHECK 约束。
+function tableSqlIncludes(db, tableName, expectedText) {
+  const row = db.prepare(`
+    SELECT sql
+    FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+    LIMIT 1
+  `).get(tableName)
+  return Boolean(row?.sql?.includes(expectedText))
+}
+
+// 旧表补列：重建复制前先补齐可空列，避免旧版本字段缺失导致迁移失败。
+function ensureColumn(db, tableName, columnName, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all()
+  const hasColumn = columns.some((col) => col.name === columnName)
+  if (!hasColumn) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+  }
+}
+
+// 重建 projects：旧表 CHECK 约束不支持 paused/done，必须重建才能写入新版状态。
+function rebuildProjectsTable(db) {
+  db.exec(`
+    ALTER TABLE projects RENAME TO projects_old;
+  `)
+
+  ensureColumn(db, "projects_old", "priority", "TEXT NOT NULL DEFAULT 'normal'")
+  ensureColumn(db, "projects_old", "color", "TEXT")
+  ensureColumn(db, "projects_old", "started_at", "TEXT")
+  ensureColumn(db, "projects_old", "due_at", "TEXT")
+  ensureColumn(db, "projects_old", "completed_at", "TEXT")
+
+  db.exec(`
+    CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'paused', 'done', 'archived')),
+      priority TEXT NOT NULL DEFAULT 'normal'
+        CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+      color TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT,
+      due_at TEXT,
+      completed_at TEXT,
+      is_deleted INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL DEFAULT 'local_owner',
+      updated_by TEXT NOT NULL DEFAULT 'local_owner',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    INSERT INTO projects (
+      id, workspace_id, title, description, status, priority, color, sort_order,
+      started_at, due_at, completed_at, is_deleted, created_by, updated_by, created_at, updated_at
+    )
+    SELECT
+      id,
+      workspace_id,
+      title,
+      description,
+      CASE WHEN status IN ('active', 'paused', 'done', 'archived') THEN status ELSE 'active' END,
+      CASE WHEN priority IN ('low', 'normal', 'high', 'urgent') THEN priority ELSE 'normal' END,
+      color,
+      sort_order,
+      started_at,
+      due_at,
+      completed_at,
+      is_deleted,
+      COALESCE(created_by, 'local_owner'),
+      COALESCE(updated_by, 'local_owner'),
+      created_at,
+      updated_at
+    FROM projects_old;
+
+    DROP TABLE projects_old;
+  `)
+}
+
+// 重建 requirements：旧 requirements 曾被当作任务使用，这里只保留需求语义字段，不自动拆成 tasks。
+function rebuildRequirementsTable(db) {
+  db.exec(`
+    ALTER TABLE requirements RENAME TO requirements_old;
+  `)
+
+  ensureColumn(db, "requirements_old", "color", "TEXT")
+
+  db.exec(`
+    CREATE TABLE requirements (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'todo'
+        CHECK (status IN ('todo', 'doing', 'done', 'archived')),
+      priority TEXT NOT NULL DEFAULT 'normal'
+        CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+      color TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      due_at TEXT,
+      completed_at TEXT,
+      is_deleted INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL DEFAULT 'local_owner',
+      updated_by TEXT NOT NULL DEFAULT 'local_owner',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    INSERT INTO requirements (
+      id, project_id, title, description, status, priority, color, sort_order,
+      due_at, completed_at, is_deleted, created_by, updated_by, created_at, updated_at
+    )
+    SELECT
+      id,
+      project_id,
+      title,
+      description,
+      CASE WHEN status IN ('todo', 'doing', 'done', 'archived') THEN status ELSE 'todo' END,
+      CASE WHEN priority IN ('low', 'normal', 'high', 'urgent') THEN priority ELSE 'normal' END,
+      color,
+      sort_order,
+      due_at,
+      completed_at,
+      is_deleted,
+      COALESCE(created_by, 'local_owner'),
+      COALESCE(updated_by, 'local_owner'),
+      created_at,
+      updated_at
+    FROM requirements_old;
+
+    DROP TABLE requirements_old;
+  `)
+}
+
+// 确保 Projects / Requirements / Tasks / 关联表为新版结构，不触碰 note_nodes。
+function ensureProjectSchema(db) {
+  db.exec("DROP VIEW IF EXISTS v_dashboard_summary")
+
+  const rebuiltProjects = !tableSqlIncludes(db, "projects", "'paused'")
+  if (rebuiltProjects) {
+    rebuildProjectsTable(db)
+  }
+
+  if (rebuiltProjects || !tableSqlIncludes(db, "requirements", "'doing'")) {
+    rebuildRequirementsTable(db)
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      requirement_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'todo'
+        CHECK (status IN ('todo', 'doing', 'done', 'cancelled')),
+      priority TEXT NOT NULL DEFAULT 'normal'
+        CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+      color TEXT,
+      is_completed INTEGER NOT NULL DEFAULT 0,
+      is_deleted INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      due_at TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      created_by TEXT NOT NULL DEFAULT 'local_owner',
+      updated_by TEXT NOT NULL DEFAULT 'local_owner',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (requirement_id) REFERENCES requirements(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS note_project_links (
+      note_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (note_id, project_id),
+      FOREIGN KEY (note_id) REFERENCES note_nodes(id),
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS note_requirement_links (
+      note_id TEXT NOT NULL,
+      requirement_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (note_id, requirement_id),
+      FOREIGN KEY (note_id) REFERENCES note_nodes(id),
+      FOREIGN KEY (requirement_id) REFERENCES requirements(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS note_task_links (
+      note_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (note_id, task_id),
+      FOREIGN KEY (note_id) REFERENCES note_nodes(id),
+      FOREIGN KEY (task_id) REFERENCES tasks(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_projects_workspace
+    ON projects(workspace_id, is_deleted, sort_order);
+
+    CREATE INDEX IF NOT EXISTS idx_projects_status_priority
+    ON projects(status, priority, updated_at DESC);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_projects_title_alive
+    ON projects(workspace_id, title)
+    WHERE is_deleted = 0;
+
+    CREATE INDEX IF NOT EXISTS idx_requirements_project
+    ON requirements(project_id, is_deleted, sort_order);
+
+    CREATE INDEX IF NOT EXISTS idx_requirements_status
+    ON requirements(status, priority, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_project
+    ON tasks(project_id, is_deleted, sort_order);
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_requirement
+    ON tasks(requirement_id, is_deleted, sort_order);
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_status_priority
+    ON tasks(status, priority, due_at, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_due
+    ON tasks(due_at, status, is_deleted);
+
+    CREATE VIEW IF NOT EXISTS v_dashboard_summary AS
+    SELECT
+      p.workspace_id AS workspace_id,
+      COUNT(DISTINCT p.id) AS project_total,
+      SUM(CASE WHEN p.status = 'active' AND p.is_deleted = 0 THEN 1 ELSE 0 END) AS project_active,
+      SUM(CASE WHEN p.status = 'archived' AND p.is_deleted = 0 THEN 1 ELSE 0 END) AS project_archived,
+      SUM(CASE WHEN r.status = 'todo' AND r.is_deleted = 0 THEN 1 ELSE 0 END) AS requirement_todo,
+      SUM(CASE WHEN r.status = 'done' AND r.is_deleted = 0 THEN 1 ELSE 0 END) AS requirement_done,
+      SUM(CASE WHEN r.priority = 'urgent' AND r.is_deleted = 0 THEN 1 ELSE 0 END) AS requirement_urgent
+    FROM projects p
+    LEFT JOIN requirements r ON r.project_id = p.id
+    WHERE p.is_deleted = 0
+    GROUP BY p.workspace_id;
   `)
 }
 
@@ -360,6 +661,7 @@ function initDatabase() {
   }
 
   ensureNoteSchema(db)
+  ensureProjectSchema(db)
   ensureDefaultWelcomeFile()
 
   return db
@@ -377,7 +679,18 @@ function getDb() {
 function listProjects() {
   const db = getDb()
   const stmt = db.prepare(`
-    SELECT id, title, description, status, sort_order AS sortOrder, updated_at AS updatedAt
+    SELECT
+      id,
+      title,
+      description,
+      status,
+      priority,
+      color,
+      sort_order AS sortOrder,
+      started_at AS startedAt,
+      due_at AS dueAt,
+      completed_at AS completedAt,
+      updated_at AS updatedAt
     FROM projects
     WHERE workspace_id = ? AND is_deleted = 0
     ORDER BY sort_order ASC, updated_at DESC
@@ -388,7 +701,7 @@ function listProjects() {
 // 对外：创建项目。
 function createProject(input) {
   const db = getDb()
-  const id = `proj_${Date.now()}`
+  const id = buildEntityId("proj")
   const now = new Date().toISOString()
   const sortStmt = db.prepare(`
     SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSort
@@ -398,18 +711,112 @@ function createProject(input) {
   const { nextSort } = sortStmt.get(WORKSPACE_ID)
   const insertStmt = db.prepare(`
     INSERT INTO projects (
-      id, workspace_id, title, description, status, sort_order, is_deleted, created_by, updated_by, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'active', ?, 0, ?, ?, ?, ?)
+      id, workspace_id, title, description, status, priority, color, sort_order,
+      started_at, due_at, completed_at, is_deleted, created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
   `)
-  insertStmt.run(id, WORKSPACE_ID, input.title, input.description || null, nextSort, LOCAL_OWNER, LOCAL_OWNER, now, now)
-  return { id, title: input.title, description: input.description || null, status: "active", sortOrder: nextSort, updatedAt: now }
+  const status = input.status || "active"
+  const priority = input.priority || "normal"
+  insertStmt.run(
+    id,
+    WORKSPACE_ID,
+    input.title,
+    input.description || null,
+    status,
+    priority,
+    input.color || null,
+    nextSort,
+    input.startedAt || null,
+    input.dueAt || null,
+    status === "done" ? now : null,
+    LOCAL_OWNER,
+    LOCAL_OWNER,
+    now,
+    now,
+  )
+  return getProjectById(id)
+}
+
+// 对外：更新项目元信息。
+function updateProject(input) {
+  const db = getDb()
+  const current = getProjectById(input.id)
+  if (!current) throw new Error("项目不存在")
+
+  const now = new Date().toISOString()
+  const nextStatus = input.status ?? current.status
+  const stmt = db.prepare(`
+    UPDATE projects
+    SET title = ?, description = ?, status = ?, priority = ?, color = ?,
+        started_at = ?, due_at = ?, completed_at = ?, updated_by = ?, updated_at = ?
+    WHERE id = ? AND is_deleted = 0
+  `)
+  stmt.run(
+    input.title ?? current.title,
+    input.description ?? current.description,
+    nextStatus,
+    input.priority ?? current.priority,
+    input.color ?? current.color,
+    input.startedAt ?? current.startedAt,
+    input.dueAt ?? current.dueAt,
+    nextStatus === "done" ? (current.completedAt || now) : null,
+    LOCAL_OWNER,
+    now,
+    input.id,
+  )
+  return getProjectById(input.id)
+}
+
+// 对外：软删除项目，同时隐藏其需求与任务。
+function deleteProject(projectId) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  const txn = db.transaction(() => {
+    db.prepare("UPDATE projects SET is_deleted = 1, updated_by = ?, updated_at = ? WHERE id = ?")
+      .run(LOCAL_OWNER, now, projectId)
+    db.prepare("UPDATE requirements SET is_deleted = 1, updated_by = ?, updated_at = ? WHERE project_id = ?")
+      .run(LOCAL_OWNER, now, projectId)
+    db.prepare("UPDATE tasks SET is_deleted = 1, updated_by = ?, updated_at = ? WHERE project_id = ?")
+      .run(LOCAL_OWNER, now, projectId)
+  })
+  txn()
+  return true
+}
+
+// 对外：调整项目排序。
+function reorderProjects(input) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  const stmt = db.prepare(`
+    UPDATE projects
+    SET sort_order = ?, updated_by = ?, updated_at = ?
+    WHERE id = ? AND workspace_id = ? AND is_deleted = 0
+  `)
+  const txn = db.transaction(() => {
+    for (const item of input.items || []) {
+      stmt.run(item.sortOrder, LOCAL_OWNER, now, item.id, WORKSPACE_ID)
+    }
+  })
+  txn()
+  return true
 }
 
 // 对外：按项目查询需求。
 function listRequirementsByProject(projectId) {
   const db = getDb()
   const stmt = db.prepare(`
-    SELECT id, title, description, status, priority, sort_order AS sortOrder, updated_at AS updatedAt
+    SELECT
+      id,
+      project_id AS projectId,
+      title,
+      description,
+      status,
+      priority,
+      color,
+      sort_order AS sortOrder,
+      due_at AS dueAt,
+      completed_at AS completedAt,
+      updated_at AS updatedAt
     FROM requirements
     WHERE project_id = ? AND is_deleted = 0
     ORDER BY sort_order ASC, updated_at DESC
@@ -420,7 +827,7 @@ function listRequirementsByProject(projectId) {
 // 对外：创建需求。
 function createRequirement(input) {
   const db = getDb()
-  const id = `req_${Date.now()}`
+  const id = buildEntityId("req")
   const now = new Date().toISOString()
   const sortStmt = db.prepare(`
     SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSort
@@ -430,37 +837,469 @@ function createRequirement(input) {
   const { nextSort } = sortStmt.get(input.projectId)
   const insertStmt = db.prepare(`
     INSERT INTO requirements (
-      id, project_id, title, description, status, priority, sort_order, is_deleted, created_by, updated_by, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'todo', ?, ?, 0, ?, ?, ?, ?)
+      id, project_id, title, description, status, priority, color, sort_order,
+      due_at, completed_at, is_deleted, created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
   `)
-  insertStmt.run(id, input.projectId, input.title, input.description || null, input.priority || "normal", nextSort, LOCAL_OWNER, LOCAL_OWNER, now, now)
-  return { id, title: input.title, description: input.description || null, status: "todo", priority: input.priority || "normal", sortOrder: nextSort, updatedAt: now }
+  const status = input.status || "todo"
+  insertStmt.run(
+    id,
+    input.projectId,
+    input.title,
+    input.description || null,
+    status,
+    input.priority || "normal",
+    input.color || null,
+    nextSort,
+    input.dueAt || null,
+    status === "done" ? now : null,
+    LOCAL_OWNER,
+    LOCAL_OWNER,
+    now,
+    now,
+  )
+  return listRequirementsByProject(input.projectId).find((row) => row.id === id) || null
 }
 
-// 对外：更新需求完成状态。
-function updateRequirementStatus(input) {
+// 对外：更新需求元信息。
+function updateRequirement(input) {
+  const db = getDb()
+  const current = db.prepare(`
+    SELECT
+      id,
+      project_id AS projectId,
+      title,
+      description,
+      status,
+      priority,
+      color,
+      sort_order AS sortOrder,
+      due_at AS dueAt,
+      completed_at AS completedAt
+    FROM requirements
+    WHERE id = ? AND is_deleted = 0
+    LIMIT 1
+  `).get(input.id)
+  if (!current) throw new Error("需求不存在")
+
+  const now = new Date().toISOString()
+  const nextStatus = input.status ?? current.status
+  const stmt = db.prepare(`
+    UPDATE requirements
+    SET title = ?, description = ?, status = ?, priority = ?, color = ?,
+        due_at = ?, completed_at = ?, updated_by = ?, updated_at = ?
+    WHERE id = ? AND is_deleted = 0
+  `)
+  stmt.run(
+    input.title ?? current.title,
+    input.description ?? current.description,
+    nextStatus,
+    input.priority ?? current.priority,
+    input.color ?? current.color,
+    input.dueAt ?? current.dueAt,
+    nextStatus === "done" ? (current.completedAt || now) : null,
+    LOCAL_OWNER,
+    now,
+    input.id,
+  )
+  return listRequirementsByProject(current.projectId).find((row) => row.id === input.id) || null
+}
+
+// 对外：软删除需求，同时软删除该需求下的任务，保持层级删除语义一致。
+function deleteRequirement(requirementId) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  const txn = db.transaction(() => {
+    db.prepare("UPDATE requirements SET is_deleted = 1, updated_by = ?, updated_at = ? WHERE id = ?")
+      .run(LOCAL_OWNER, now, requirementId)
+    db.prepare("UPDATE tasks SET is_deleted = 1, updated_by = ?, updated_at = ? WHERE requirement_id = ?")
+      .run(LOCAL_OWNER, now, requirementId)
+  })
+  txn()
+  return true
+}
+
+// 对外：调整需求排序。
+function reorderRequirements(input) {
   const db = getDb()
   const now = new Date().toISOString()
   const stmt = db.prepare(`
     UPDATE requirements
-    SET status = ?, completed_at = ?, updated_by = ?, updated_at = ?
-    WHERE id = ?
+    SET sort_order = ?, updated_by = ?, updated_at = ?
+    WHERE id = ? AND project_id = ? AND is_deleted = 0
   `)
-  const status = input.done ? "done" : "todo"
-  stmt.run(status, input.done ? now : null, LOCAL_OWNER, now, input.id)
-  return { id: input.id, status }
+  const txn = db.transaction(() => {
+    for (const item of input.items || []) {
+      stmt.run(item.sortOrder, LOCAL_OWNER, now, item.id, input.projectId)
+    }
+  })
+  txn()
+  return true
+}
+
+// 对外：按项目查询任务。
+function listTasksByProject(projectId) {
+  const db = getDb()
+  const stmt = db.prepare(`
+    SELECT
+      t.id,
+      t.project_id AS projectId,
+      t.requirement_id AS requirementId,
+      t.title,
+      t.description,
+      t.status,
+      t.priority,
+      t.color,
+      t.is_completed AS isCompleted,
+      t.sort_order AS sortOrder,
+      t.due_at AS dueAt,
+      t.started_at AS startedAt,
+      t.completed_at AS completedAt,
+      t.updated_at AS updatedAt,
+      p.title AS projectTitle,
+      r.title AS requirementTitle
+    FROM tasks t
+    JOIN projects p ON p.id = t.project_id AND p.is_deleted = 0
+    LEFT JOIN requirements r ON r.id = t.requirement_id AND r.is_deleted = 0
+    WHERE t.project_id = ? AND t.is_deleted = 0
+    ORDER BY t.sort_order ASC, t.updated_at DESC
+  `)
+  return stmt.all(projectId)
+}
+
+// 对外：跨项目查询任务，供全局 Tasks 页面筛选。
+function listAllTasks(filters = {}) {
+  const db = getDb()
+  const conditions = ["t.is_deleted = 0", "p.is_deleted = 0"]
+  const params = []
+
+  if (filters.projectId) {
+    conditions.push("t.project_id = ?")
+    params.push(filters.projectId)
+  }
+  if (filters.requirementId) {
+    conditions.push("t.requirement_id = ?")
+    params.push(filters.requirementId)
+  }
+  if (Array.isArray(filters.statuses) && filters.statuses.length > 0) {
+    conditions.push(`t.status IN (${filters.statuses.map(() => "?").join(", ")})`)
+    params.push(...filters.statuses)
+  } else if (filters.status) {
+    conditions.push("t.status = ?")
+    params.push(filters.status)
+  }
+  if (filters.priority) {
+    conditions.push("t.priority = ?")
+    params.push(filters.priority)
+  }
+  if (filters.dueAtFrom && filters.dueAtTo) {
+    conditions.push("t.due_at BETWEEN ? AND ?")
+    params.push(filters.dueAtFrom, filters.dueAtTo)
+  } else if (filters.dueAtFrom) {
+    conditions.push("t.due_at = ?")
+    params.push(filters.dueAtFrom)
+  } else if (filters.dueAt) {
+    conditions.push("t.due_at = ?")
+    params.push(filters.dueAt)
+  }
+  if (filters.isCompleted !== undefined && filters.isCompleted !== null && filters.isCompleted !== "") {
+    conditions.push("t.is_completed = ?")
+    params.push(filters.isCompleted ? 1 : 0)
+  }
+
+  const stmt = db.prepare(`
+    SELECT
+      t.id,
+      t.project_id AS projectId,
+      t.requirement_id AS requirementId,
+      t.title,
+      t.description,
+      t.status,
+      t.priority,
+      t.color,
+      t.is_completed AS isCompleted,
+      t.sort_order AS sortOrder,
+      t.due_at AS dueAt,
+      t.started_at AS startedAt,
+      t.completed_at AS completedAt,
+      t.updated_at AS updatedAt,
+      p.title AS projectTitle,
+      r.title AS requirementTitle
+    FROM tasks t
+    JOIN projects p ON p.id = t.project_id
+    LEFT JOIN requirements r ON r.id = t.requirement_id AND r.is_deleted = 0
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY t.due_at IS NULL ASC, t.due_at ASC, t.updated_at DESC
+  `)
+  return stmt.all(...params)
+}
+
+// 对外：创建任务，requirement_id 允许为空。
+function createTask(input) {
+  const db = getDb()
+  const id = buildEntityId("task")
+  const now = new Date().toISOString()
+  const sortStmt = db.prepare(`
+    SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSort
+    FROM tasks
+    WHERE project_id = ? AND is_deleted = 0
+  `)
+  const { nextSort } = sortStmt.get(input.projectId)
+  const status = input.status || (input.isCompleted ? "done" : "todo")
+  const isCompleted = input.isCompleted || status === "done" ? 1 : 0
+
+  const insertStmt = db.prepare(`
+    INSERT INTO tasks (
+      id, project_id, requirement_id, title, description, status, priority, color,
+      is_completed, is_deleted, sort_order, due_at, started_at, completed_at,
+      created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  insertStmt.run(
+    id,
+    input.projectId,
+    input.requirementId || null,
+    input.title,
+    input.description || null,
+    status,
+    input.priority || "normal",
+    input.color || null,
+    isCompleted,
+    nextSort,
+    input.dueAt || null,
+    input.startedAt || null,
+    isCompleted ? now : null,
+    LOCAL_OWNER,
+    LOCAL_OWNER,
+    now,
+    now,
+  )
+  return listTasksByProject(input.projectId).find((row) => row.id === id) || null
+}
+
+// 对外：更新任务元信息。
+function updateTask(input) {
+  const db = getDb()
+  const current = db.prepare(`
+    SELECT
+      id,
+      project_id AS projectId,
+      requirement_id AS requirementId,
+      title,
+      description,
+      status,
+      priority,
+      color,
+      is_completed AS isCompleted,
+      due_at AS dueAt,
+      started_at AS startedAt,
+      completed_at AS completedAt
+    FROM tasks
+    WHERE id = ? AND is_deleted = 0
+    LIMIT 1
+  `).get(input.id)
+  if (!current) throw new Error("任务不存在")
+
+  const now = new Date().toISOString()
+  const nextStatus = input.status ?? current.status
+  const nextCompleted = input.isCompleted !== undefined
+    ? (input.isCompleted ? 1 : 0)
+    : (nextStatus === "done" ? 1 : current.isCompleted)
+  const stmt = db.prepare(`
+    UPDATE tasks
+    SET project_id = ?, requirement_id = ?, title = ?, description = ?, status = ?,
+        priority = ?, color = ?, is_completed = ?, due_at = ?, started_at = ?,
+        completed_at = ?, updated_by = ?, updated_at = ?
+    WHERE id = ? AND is_deleted = 0
+  `)
+  stmt.run(
+    input.projectId ?? current.projectId,
+    input.requirementId === undefined ? current.requirementId : (input.requirementId || null),
+    input.title ?? current.title,
+    input.description ?? current.description,
+    nextStatus,
+    input.priority ?? current.priority,
+    input.color ?? current.color,
+    nextCompleted,
+    input.dueAt ?? current.dueAt,
+    input.startedAt ?? current.startedAt,
+    nextCompleted ? (current.completedAt || now) : null,
+    LOCAL_OWNER,
+    now,
+    input.id,
+  )
+  return listTasksByProject(input.projectId ?? current.projectId).find((row) => row.id === input.id) || null
+}
+
+// 对外：快速更新任务状态和勾选完成。
+function updateTaskStatus(input) {
+  const nextStatus = input.status || (input.done ? "done" : "todo")
+  return updateTask({
+    id: input.id,
+    status: nextStatus,
+    isCompleted: input.done !== undefined ? input.done : nextStatus === "done",
+  })
+}
+
+// 对外：软删除任务。
+function deleteTask(taskId) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  db.prepare("UPDATE tasks SET is_deleted = 1, updated_by = ?, updated_at = ? WHERE id = ?")
+    .run(LOCAL_OWNER, now, taskId)
+  return true
+}
+
+// 对外：调整任务排序。
+function reorderTasks(input) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  const stmt = db.prepare(`
+    UPDATE tasks
+    SET sort_order = ?, updated_by = ?, updated_at = ?
+    WHERE id = ? AND project_id = ? AND is_deleted = 0
+  `)
+  const txn = db.transaction(() => {
+    for (const item of input.items || []) {
+      stmt.run(item.sortOrder, LOCAL_OWNER, now, item.id, input.projectId)
+    }
+  })
+  txn()
+  return true
 }
 
 // 对外：按 ID 获取项目。
 function getProjectById(projectId) {
   const db = getDb()
   const stmt = db.prepare(`
-    SELECT id, title, description, status
+    SELECT
+      id,
+      title,
+      description,
+      status,
+      priority,
+      color,
+      sort_order AS sortOrder,
+      started_at AS startedAt,
+      due_at AS dueAt,
+      completed_at AS completedAt,
+      updated_at AS updatedAt
     FROM projects
     WHERE id = ? AND is_deleted = 0
     LIMIT 1
   `)
   return stmt.get(projectId) || null
+}
+
+// 查询关联笔记基础字段：仅返回未删除文件节点，不读取 Markdown 正文。
+function selectLinkedNotes(sql, ...params) {
+  const db = getDb()
+  return db.prepare(sql).all(...params)
+}
+
+// 对外：查询项目关联笔记，包含项目/需求/任务三类关联。
+function listNotesByProject(projectId) {
+  return selectLinkedNotes(`
+    SELECT DISTINCT
+      n.id,
+      n.title,
+      n.file_path AS filePath,
+      n.updated_at AS updatedAt
+    FROM note_nodes n
+    WHERE n.node_type = 'file'
+      AND n.is_deleted = 0
+      AND (
+        EXISTS (
+          SELECT 1 FROM note_project_links l
+          WHERE l.note_id = n.id AND l.project_id = ?
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM note_requirement_links l
+          JOIN requirements r ON r.id = l.requirement_id
+          WHERE l.note_id = n.id AND r.project_id = ? AND r.is_deleted = 0
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM note_task_links l
+          JOIN tasks t ON t.id = l.task_id
+          WHERE l.note_id = n.id AND t.project_id = ? AND t.is_deleted = 0
+        )
+      )
+    ORDER BY n.updated_at DESC
+  `, projectId, projectId, projectId)
+}
+
+// 对外：查询需求关联笔记。
+function listNotesByRequirement(requirementId) {
+  return selectLinkedNotes(`
+    SELECT n.id, n.title, n.file_path AS filePath, n.updated_at AS updatedAt
+    FROM note_requirement_links l
+    JOIN note_nodes n ON n.id = l.note_id
+    WHERE l.requirement_id = ? AND n.node_type = 'file' AND n.is_deleted = 0
+    ORDER BY n.updated_at DESC
+  `, requirementId)
+}
+
+// 对外：查询任务关联笔记。
+function listNotesByTask(taskId) {
+  return selectLinkedNotes(`
+    SELECT n.id, n.title, n.file_path AS filePath, n.updated_at AS updatedAt
+    FROM note_task_links l
+    JOIN note_nodes n ON n.id = l.note_id
+    WHERE l.task_id = ? AND n.node_type = 'file' AND n.is_deleted = 0
+    ORDER BY n.updated_at DESC
+  `, taskId)
+}
+
+// 校验关联笔记：只允许关联文件节点。
+function ensureNoteFile(noteId) {
+  const note = getNoteById(noteId)
+  if (!note || note.nodeType !== "file") {
+    throw new Error("只能关联文件笔记")
+  }
+}
+
+// 对外：关联/取消关联笔记与项目。
+function linkNoteToProject(noteId, projectId) {
+  ensureNoteFile(noteId)
+  getDb().prepare("INSERT OR IGNORE INTO note_project_links (note_id, project_id) VALUES (?, ?)")
+    .run(noteId, projectId)
+  return true
+}
+
+function unlinkNoteFromProject(noteId, projectId) {
+  getDb().prepare("DELETE FROM note_project_links WHERE note_id = ? AND project_id = ?")
+    .run(noteId, projectId)
+  return true
+}
+
+// 对外：关联/取消关联笔记与需求。
+function linkNoteToRequirement(noteId, requirementId) {
+  ensureNoteFile(noteId)
+  getDb().prepare("INSERT OR IGNORE INTO note_requirement_links (note_id, requirement_id) VALUES (?, ?)")
+    .run(noteId, requirementId)
+  return true
+}
+
+function unlinkNoteFromRequirement(noteId, requirementId) {
+  getDb().prepare("DELETE FROM note_requirement_links WHERE note_id = ? AND requirement_id = ?")
+    .run(noteId, requirementId)
+  return true
+}
+
+// 对外：关联/取消关联笔记与任务。
+function linkNoteToTask(noteId, taskId) {
+  ensureNoteFile(noteId)
+  getDb().prepare("INSERT OR IGNORE INTO note_task_links (note_id, task_id) VALUES (?, ?)")
+    .run(noteId, taskId)
+  return true
+}
+
+function unlinkNoteFromTask(noteId, taskId) {
+  getDb().prepare("DELETE FROM note_task_links WHERE note_id = ? AND task_id = ?")
+    .run(noteId, taskId)
+  return true
 }
 
 // 对外：列出笔记节点（侧边栏树）。
@@ -489,10 +1328,13 @@ function getNoteById(noteId) {
   return stmt.get(noteId) || null
 }
 
-// 对外：读取 Markdown 正文。
+// 对外：读取可文本化的正文；PDF/Word/Excel 等二进制文件必须走系统默认应用。
 function readNoteContent(noteId) {
   const note = getNoteById(noteId)
   if (!note || note.nodeType !== "file" || !note.filePath) return ""
+  if (!isTextReadableNoteFileName(note.filePath)) {
+    throw new Error("该文件类型不支持在编辑器中直接读取")
+  }
 
   const targetPath = toVaultAbsolutePath(note.filePath)
   if (!fs.existsSync(targetPath)) {
@@ -502,11 +1344,14 @@ function readNoteContent(noteId) {
   return fs.readFileSync(targetPath, "utf8")
 }
 
-// 对外：保存 Markdown 正文，只更新 metadata。
+// 对外：保存文本正文，只允许 Markdown/文本/绘图 JSON 容器走 UTF-8 写入。
 function saveNoteContent(input) {
   const db = getDb()
   const note = getNoteById(input.noteId)
   if (!note || note.nodeType !== "file" || !note.filePath) throw new Error("目标笔记不存在或不是文件")
+  if (!isTextReadableNoteFileName(note.filePath)) {
+    throw new Error("该文件类型不支持在编辑器中直接保存")
+  }
 
   const now = new Date().toISOString()
   const targetPath = toVaultAbsolutePath(note.filePath)
@@ -539,10 +1384,8 @@ function buildUniqueChildPath(parentRelativePath, targetName, isFile, fileExt = 
     ? toVaultAbsolutePath(parentRelativePath)
     : getNotesPath()
   const ext = isFile ? fileExt : ""
-  const normalized = normalizeNodeName(targetName)
-    .replace(/\.excalidraw\.md$/i, "")
-    .replace(/\.excalidraw$/i, "")
-    .replace(/\.md$/i, "")
+  // 目标名允许用户带后缀输入，这里统一去掉已知后缀后再追加保留后缀。
+  const normalized = stripSupportedFileSuffix(normalizeNodeName(targetName))
 
   let seq = 0
   while (true) {
@@ -704,10 +1547,7 @@ function moveNoteNode(input) {
 
   // 文件移动时保留原始扩展名；目录移动时保留目录名。
   const fileExt = node.nodeType === "file" ? getFileSuffixFromPath(node.filePath || "") : ""
-  const baseName = path.posix.basename(node.filePath)
-    .replace(/\.excalidraw\.md$/i, "")
-    .replace(/\.excalidraw$/i, "")
-    .replace(/\.md$/i, "")
+  const baseName = stripSupportedFileSuffix(path.posix.basename(node.filePath))
   const nextRelativePath = buildUniqueChildPath(targetParentPath, baseName, node.nodeType === "file", fileExt)
   const nextAbsPath = toVaultAbsolutePath(nextRelativePath)
 
@@ -787,9 +1627,30 @@ module.exports = {
   startNotesWatcher,
   listProjects,
   createProject,
+  updateProject,
+  deleteProject,
+  reorderProjects,
   listRequirementsByProject,
   createRequirement,
-  updateRequirementStatus,
+  updateRequirement,
+  deleteRequirement,
+  reorderRequirements,
+  listTasksByProject,
+  listAllTasks,
+  createTask,
+  updateTask,
+  updateTaskStatus,
+  deleteTask,
+  reorderTasks,
+  listNotesByProject,
+  listNotesByRequirement,
+  listNotesByTask,
+  linkNoteToProject,
+  unlinkNoteFromProject,
+  linkNoteToRequirement,
+  unlinkNoteFromRequirement,
+  linkNoteToTask,
+  unlinkNoteFromTask,
   getProjectById,
   listNoteNodes,
   getNoteById,

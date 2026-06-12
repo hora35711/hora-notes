@@ -31,9 +31,31 @@ function registerDbIpc() {
     return true
   })
 
+  ipcMain.handle("shell:notes:openDefault", async (_event, noteId) => {
+    const note = db.getNoteById(noteId)
+    if (!note || !note.filePath) {
+      throw new Error("目标节点不存在")
+    }
+
+    const targetPath = path.join(db.getVaultPath(), note.filePath)
+    if (!fs.existsSync(targetPath)) {
+      throw new Error("目标路径不存在")
+    }
+
+    // 使用系统默认应用打开 PDF/Word/Excel 等不适合直接进入编辑器的文件。
+    const errorMessage = await shell.openPath(targetPath)
+    if (errorMessage) {
+      throw new Error(errorMessage)
+    }
+    return true
+  })
+
   ipcMain.handle("db:projects:list", () => db.listProjects())
   ipcMain.handle("db:projects:create", (_event, input) => db.createProject(input))
   ipcMain.handle("db:projects:get", (_event, projectId) => db.getProjectById(projectId))
+  ipcMain.handle("db:projects:update", (_event, input) => db.updateProject(input))
+  ipcMain.handle("db:projects:delete", (_event, projectId) => db.deleteProject(projectId))
+  ipcMain.handle("db:projects:reorder", (_event, input) => db.reorderProjects(input))
 
   ipcMain.handle("db:requirements:listByProject", (_event, projectId) =>
     db.listRequirementsByProject(projectId),
@@ -41,9 +63,29 @@ function registerDbIpc() {
   ipcMain.handle("db:requirements:create", (_event, input) =>
     db.createRequirement(input),
   )
-  ipcMain.handle("db:requirements:updateStatus", (_event, input) =>
-    db.updateRequirementStatus(input),
+  ipcMain.handle("db:requirements:update", (_event, input) =>
+    db.updateRequirement(input),
   )
+  ipcMain.handle("db:requirements:delete", (_event, requirementId) => db.deleteRequirement(requirementId))
+  ipcMain.handle("db:requirements:reorder", (_event, input) => db.reorderRequirements(input))
+
+  ipcMain.handle("db:tasks:listByProject", (_event, projectId) => db.listTasksByProject(projectId))
+  ipcMain.handle("db:tasks:listAll", (_event, filters) => db.listAllTasks(filters))
+  ipcMain.handle("db:tasks:create", (_event, input) => db.createTask(input))
+  ipcMain.handle("db:tasks:update", (_event, input) => db.updateTask(input))
+  ipcMain.handle("db:tasks:updateStatus", (_event, input) => db.updateTaskStatus(input))
+  ipcMain.handle("db:tasks:delete", (_event, taskId) => db.deleteTask(taskId))
+  ipcMain.handle("db:tasks:reorder", (_event, input) => db.reorderTasks(input))
+
+  ipcMain.handle("db:noteLinks:listByProject", (_event, projectId) => db.listNotesByProject(projectId))
+  ipcMain.handle("db:noteLinks:listByRequirement", (_event, requirementId) => db.listNotesByRequirement(requirementId))
+  ipcMain.handle("db:noteLinks:listByTask", (_event, taskId) => db.listNotesByTask(taskId))
+  ipcMain.handle("db:noteLinks:linkProject", (_event, noteId, projectId) => db.linkNoteToProject(noteId, projectId))
+  ipcMain.handle("db:noteLinks:unlinkProject", (_event, noteId, projectId) => db.unlinkNoteFromProject(noteId, projectId))
+  ipcMain.handle("db:noteLinks:linkRequirement", (_event, noteId, requirementId) => db.linkNoteToRequirement(noteId, requirementId))
+  ipcMain.handle("db:noteLinks:unlinkRequirement", (_event, noteId, requirementId) => db.unlinkNoteFromRequirement(noteId, requirementId))
+  ipcMain.handle("db:noteLinks:linkTask", (_event, noteId, taskId) => db.linkNoteToTask(noteId, taskId))
+  ipcMain.handle("db:noteLinks:unlinkTask", (_event, noteId, taskId) => db.unlinkNoteFromTask(noteId, taskId))
 
   ipcMain.handle("db:notes:list", () => db.listNoteNodes())
   ipcMain.handle("db:notes:get", (_event, noteId) => db.getNoteById(noteId))
