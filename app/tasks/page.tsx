@@ -7,6 +7,7 @@ import Link from "next/link"
 import { Check, CheckCircle2, ChevronDown, Circle, Filter, Pencil, RotateCcw, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { DatePickerField } from "@/components/date-picker-field"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -67,7 +68,9 @@ export default function TasksPage() {
     description: "",
     status: "todo" as TaskStatus,
     priority: "normal" as Priority,
+    startedAt: "",
     dueAt: "",
+    completedAt: "",
   })
   const [error, setError] = useState<string | null>(null)
 
@@ -147,7 +150,9 @@ export default function TasksPage() {
       description: task.description || "",
       status: task.status,
       priority: task.priority,
+      startedAt: task.startedAt || "",
       dueAt: task.dueAt || "",
+      completedAt: task.completedAt || "",
     })
   }
 
@@ -164,7 +169,9 @@ export default function TasksPage() {
         description: taskForm.description.trim() || null,
         status: taskForm.status,
         priority: taskForm.priority,
+        startedAt: taskForm.startedAt || null,
         dueAt: taskForm.dueAt || null,
+        completedAt: taskForm.completedAt || null,
         isCompleted: taskForm.status === "done",
       })
       await refreshTasks()
@@ -286,7 +293,12 @@ export default function TasksPage() {
               <span>{PRIORITY_TEXT[task.priority]}</span>
               <Link href={`/projects/${task.projectId}`} className="truncate hover:underline">{task.projectTitle}</Link>
               <span className="truncate text-neutral-500">{task.requirementTitle || "无需求"}</span>
-              <span className="text-xs text-neutral-500">{task.dueAt || "-"}</span>
+              {/* 三行日期把任务周期压缩成一个更容易扫视的摘要。 */}
+              <span className="text-xs text-neutral-500">
+                <span className="block">{task.startedAt || "未开始"}</span>
+                <span className="block">{task.dueAt || "未计划"}</span>
+                <span className="block">{task.completedAt || "未完成"}</span>
+              </span>
               <span className="text-xs text-neutral-500">{task.updatedAt?.slice(0, 10)}</span>
               <div className="flex justify-end">
                 <Dialog>
@@ -323,14 +335,18 @@ function TaskEditDialog(props: {
     description: string
     status: TaskStatus
     priority: Priority
+    startedAt: string
     dueAt: string
+    completedAt: string
   }
   onFormChange: (form: {
     title: string
     description: string
     status: TaskStatus
     priority: Priority
+    startedAt: string
     dueAt: string
+    completedAt: string
   }) => void
   onSave: () => Promise<void>
 }) {
@@ -383,13 +399,24 @@ function TaskEditDialog(props: {
             </select>
           </div>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="task-due-at">截止时间</Label>
-          <Input
+        <div className="grid gap-3 md:grid-cols-3">
+          <DatePickerField
+            id="task-started-at"
+            label="开始日期"
+            value={props.form.startedAt}
+            onChange={(value) => props.onFormChange({ ...props.form, startedAt: value })}
+          />
+          <DatePickerField
             id="task-due-at"
-            type="date"
+            label="计划结束"
             value={props.form.dueAt}
-            onChange={(event) => props.onFormChange({ ...props.form, dueAt: event.target.value })}
+            onChange={(value) => props.onFormChange({ ...props.form, dueAt: value })}
+          />
+          <DatePickerField
+            id="task-completed-at"
+            label="最终结束"
+            value={props.form.completedAt}
+            onChange={(value) => props.onFormChange({ ...props.form, completedAt: value })}
           />
         </div>
       </div>

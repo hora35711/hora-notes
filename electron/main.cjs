@@ -130,12 +130,14 @@ function createMainWindow() {
   mainWindow = win
 
   const devUrl = process.env.ELECTRON_RENDERER_URL
-  if (devUrl) {
-    win.loadURL(devUrl)
-    return
-  }
 
-  win.loadFile(path.join(__dirname, "renderer", "index.html"))
+  if (devUrl) {
+    // 开发模式
+    win.loadURL(devUrl)
+  } else {
+    // ✅ 生产模式（关键修改）
+    win.loadURL("http://localhost:3000")
+  }
 }
 
 app.whenReady().then(() => {

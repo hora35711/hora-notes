@@ -19,6 +19,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { DatePickerField } from "@/components/date-picker-field"
 import {
   Dialog,
   DialogClose,
@@ -58,6 +59,9 @@ const PRIORITY_TEXT: Record<Priority, string> = {
 
 const COLOR_OPTIONS = ["#6b7280", "#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#9333ea"]
 const LAST_PROJECT_STORAGE_KEY = "hora_last_project_id"
+const PROJECTS_VIEW_STORAGE_KEY = "hora_projects_view_mode"
+
+type ProjectsViewMode = "list" | "cards" | "gantt"
 
 export default function ProjectsPage() {
   const router = useRouter()
@@ -65,12 +69,16 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editingProject, setEditingProject] = useState<ProjectRecord | null>(null)
+  const [viewMode, setViewMode] = useState<ProjectsViewMode>("list")
   const [form, setForm] = useState({
     title: "",
     description: "",
     status: "active" as ProjectStatus,
     priority: "normal" as Priority,
     color: COLOR_OPTIONS[0],
+    startedAt: "",
+    dueAt: "",
+    completedAt: "",
   })
 
   // 统一刷新项目列表，保证排序和更新时间来自数据库。
@@ -86,6 +94,10 @@ export default function ProjectsPage() {
         setError(null)
         const shouldShowList = new URLSearchParams(window.location.search).get("list") === "1"
         const lastProjectId = window.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)
+        const savedViewMode = window.localStorage.getItem(PROJECTS_VIEW_STORAGE_KEY)
+        if (savedViewMode === "list" || savedViewMode === "cards" || savedViewMode === "gantt") {
+          setViewMode(savedViewMode)
+        }
         if (!shouldShowList && lastProjectId) {
           router.replace(`/projects/${lastProjectId}`)
           return
@@ -101,12 +113,25 @@ export default function ProjectsPage() {
     void run()
   }, [router])
 
+  useEffect(() => {
+    window.localStorage.setItem(PROJECTS_VIEW_STORAGE_KEY, viewMode)
+  }, [viewMode])
+
   // 排序后的列表：DB 已排序，这里保留 memo 方便后续扩展筛选。
   const sortedProjects = useMemo(() => projects, [projects])
 
   const openCreateDialog = () => {
     setEditingProject(null)
-    setForm({ title: "", description: "", status: "active", priority: "normal", color: COLOR_OPTIONS[0] })
+    setForm({
+      title: "",
+      description: "",
+      status: "active",
+      priority: "normal",
+      color: COLOR_OPTIONS[0],
+      startedAt: "",
+      dueAt: "",
+      completedAt: "",
+    })
   }
 
   const openEditDialog = (project: ProjectRecord) => {
@@ -117,6 +142,9 @@ export default function ProjectsPage() {
       status: project.status,
       priority: project.priority,
       color: project.color || COLOR_OPTIONS[0],
+      startedAt: project.startedAt || "",
+      dueAt: project.dueAt || "",
+      completedAt: project.completedAt || "",
     })
   }
 
@@ -134,6 +162,9 @@ export default function ProjectsPage() {
           status: form.status,
           priority: form.priority,
           color: form.color,
+          startedAt: form.startedAt || null,
+          dueAt: form.dueAt || null,
+          completedAt: form.completedAt || null,
         })
       } else {
         await createProject({
@@ -142,6 +173,9 @@ export default function ProjectsPage() {
           status: form.status,
           priority: form.priority,
           color: form.color,
+          startedAt: form.startedAt || undefined,
+          dueAt: form.dueAt || undefined,
+          completedAt: form.completedAt || undefined,
         })
       }
       await refreshProjects()
@@ -182,7 +216,25 @@ export default function ProjectsPage() {
     <main className="w-full p-6 md:p-8">
       <header className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">我的项目</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">我的项目</h1>
+            {/* 视图切换只改变展示方式，不影响项目数据本身。 */}
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-neutral-500" htmlFor="projects-view-mode">
+                视图
+              </Label>
+              <select
+                id="projects-view-mode"
+                value={viewMode}
+                onChange={(event) => setViewMode(event.target.value as ProjectsViewMode)}
+                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="list">列表</option>
+                <option value="cards">卡片</option>
+                <option value="gantt">甘特</option>
+              </select>
+            </div>
+          </div>
           <p className="mt-1 text-xs text-neutral-500">Project 是需求和任务的项目容器。</p>
         </div>
 
@@ -204,78 +256,133 @@ export default function ProjectsPage() {
 
       {error ? <p className="mb-4 text-sm text-rose-600">{error}</p> : null}
 
-      <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
-        <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.6fr_0.5fr_1fr_0.9fr] border-b bg-neutral-50 px-4 py-2 text-xs font-medium text-neutral-500">
-          <span>项目名称</span>
-          <span>状态</span>
-          <span>优先级</span>
-          <span>颜色</span>
-          <span>排序</span>
-          <span>更新时间</span>
-          <span className="text-right">操作</span>
-        </div>
+      {viewMode === "list" ? (
+        <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
+          <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.6fr_0.5fr_1fr_0.9fr] border-b bg-neutral-50 px-4 py-2 text-xs font-medium text-neutral-500">
+            <span>项目名称</span>
+            <span>状态</span>
+            <span>优先级</span>
+            <span>颜色</span>
+            <span>排序</span>
+            <span>更新时间</span>
+            <span className="text-right">操作</span>
+          </div>
 
-        {sortedProjects.map((project, index) => (
-          <article
-            key={project.id}
-            className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.6fr_0.5fr_1fr_0.9fr] items-center border-b px-4 py-3 text-sm last:border-b-0"
-          >
-            <Link href={`/projects/${project.id}`} className="min-w-0 font-medium text-neutral-900 hover:underline">
-              <span className="block truncate">{project.title}</span>
-              {project.description ? (
-                <span className="mt-0.5 block truncate text-xs font-normal text-neutral-500">{project.description}</span>
-              ) : null}
-            </Link>
-            <span>{STATUS_TEXT[project.status]}</span>
-            <span>{PRIORITY_TEXT[project.priority]}</span>
-            <span>
-              <span className="inline-flex size-4 rounded-full border" style={{ backgroundColor: project.color || "#6b7280" }} />
-            </span>
-            <span>{project.sortOrder}</span>
-            <span className="text-xs text-neutral-500">{project.updatedAt?.slice(0, 10)}</span>
-            <div className="flex justify-end gap-1">
-              <Button type="button" size="icon-sm" variant="outline" disabled={index === 0} onClick={() => void handleMoveProject(project.id, -1)}>
-                <ArrowUp className="size-3.5" />
-              </Button>
-              <Button type="button" size="icon-sm" variant="outline" disabled={index === sortedProjects.length - 1} onClick={() => void handleMoveProject(project.id, 1)}>
-                <ArrowDown className="size-3.5" />
-              </Button>
-              <Dialog>
-                <DialogTrigger asChild>
-                  <Button type="button" size="icon-sm" variant="outline" onClick={() => openEditDialog(project)}>
-                    <Pencil className="size-3.5" />
-                  </Button>
-                </DialogTrigger>
-                <ProjectDialog
-                  form={form}
-                  editing
-                  onFormChange={setForm}
-                  onSave={handleSaveProject}
-                />
-              </Dialog>
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button type="button" size="icon-sm" variant="outline">
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>确认删除项目？</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      删除项目会同时删除它下面的需求和任务。该操作会软删除数据，不会影响 Notes 文件。
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>取消</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => void handleDeleteProject(project.id)}>确认删除</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+          {sortedProjects.map((project, index) => (
+            <article
+              key={project.id}
+              className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.6fr_0.5fr_1fr_0.9fr] items-center border-b px-4 py-3 text-sm last:border-b-0"
+            >
+              <Link href={getProjectHref(project.id, viewMode)} className="min-w-0 font-medium text-neutral-900 hover:underline">
+                <span className="block truncate">{project.title}</span>
+                {project.description ? (
+                  <span className="mt-0.5 block truncate text-xs font-normal text-neutral-500">{project.description}</span>
+                ) : null}
+              </Link>
+              <span>{STATUS_TEXT[project.status]}</span>
+              <span>{PRIORITY_TEXT[project.priority]}</span>
+              <span>
+                <span className="inline-flex size-4 rounded-full border" style={{ backgroundColor: project.color || "#6b7280" }} />
+              </span>
+              <span>{project.sortOrder}</span>
+              <span className="text-xs text-neutral-500">{project.updatedAt?.slice(0, 10)}</span>
+              <div className="flex justify-end gap-1">
+                <Button type="button" size="icon-sm" variant="outline" disabled={index === 0} onClick={() => void handleMoveProject(project.id, -1)}>
+                  <ArrowUp className="size-3.5" />
+                </Button>
+                <Button type="button" size="icon-sm" variant="outline" disabled={index === sortedProjects.length - 1} onClick={() => void handleMoveProject(project.id, 1)}>
+                  <ArrowDown className="size-3.5" />
+                </Button>
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <Button type="button" size="icon-sm" variant="outline" onClick={() => openEditDialog(project)}>
+                      <Pencil className="size-3.5" />
+                    </Button>
+                  </DialogTrigger>
+                  <ProjectDialog
+                    form={form}
+                    editing
+                    onFormChange={setForm}
+                    onSave={handleSaveProject}
+                  />
+                </Dialog>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button type="button" size="icon-sm" variant="outline">
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>确认删除项目？</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        删除项目会同时删除它下面的需求和任务。该操作会软删除数据，不会影响 Notes 文件。
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>取消</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => void handleDeleteProject(project.id)}>确认删除</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            </article>
+          ))}
+        </section>
+      ) : viewMode === "cards" ? (
+        <section className="rounded-lg border border-neutral-200 bg-white p-4">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-semibold">卡片视图</h2>
+              <p className="text-xs text-neutral-500">每个项目一张卡，适合快速查看周期和状态。</p>
             </div>
-          </article>
-        ))}
-      </section>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {sortedProjects.map((project) => (
+              <Link key={project.id} href={getProjectHref(project.id, viewMode)} className="group rounded-2xl border border-neutral-200 bg-neutral-50 p-4 transition hover:-translate-y-0.5 hover:border-neutral-300 hover:bg-white">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-lg font-semibold group-hover:underline">{project.title}</h3>
+                    <p className="mt-1 line-clamp-2 text-xs text-neutral-500">{project.description || "暂无描述"}</p>
+                  </div>
+                  <span className="inline-flex size-4 rounded-full border" style={{ backgroundColor: project.color || "#6b7280" }} />
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs text-neutral-500">
+                  <div className="rounded-xl bg-white px-3 py-2">
+                    <span className="block text-[11px]">状态</span>
+                    <span className="block font-medium text-neutral-900">{STATUS_TEXT[project.status]}</span>
+                  </div>
+                  <div className="rounded-xl bg-white px-3 py-2">
+                    <span className="block text-[11px]">优先级</span>
+                    <span className="block font-medium text-neutral-900">{PRIORITY_TEXT[project.priority]}</span>
+                  </div>
+                  <div className="rounded-xl bg-white px-3 py-2">
+                    <span className="block text-[11px]">开始</span>
+                    <span className="block font-medium text-neutral-900">{project.startedAt || "未设置"}</span>
+                  </div>
+                  <div className="rounded-xl bg-white px-3 py-2">
+                    <span className="block text-[11px]">计划结束</span>
+                    <span className="block font-medium text-neutral-900">{project.dueAt || "未设置"}</span>
+                  </div>
+                </div>
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
+                  <div className="h-2 rounded-full bg-[linear-gradient(90deg,#2563eb_0%,#38bdf8_100%)]" style={{ width: project.startedAt && project.dueAt ? "100%" : "45%" }} />
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : (
+        <section className="rounded-lg border border-neutral-200 bg-white p-4">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">甘特视图</h2>
+              <p className="text-xs text-neutral-500">按项目开始和计划结束时间，快速扫一眼整个周期。</p>
+            </div>
+          </div>
+          <ProjectGantt projects={sortedProjects} />
+        </section>
+      )}
 
       {!loading && sortedProjects.length === 0 ? <p className="mt-6 text-sm text-neutral-500">暂无项目。</p> : null}
     </main>
@@ -289,6 +396,9 @@ function ProjectDialog(props: {
     status: ProjectStatus
     priority: Priority
     color: string
+    startedAt: string
+    dueAt: string
+    completedAt: string
   }
   editing: boolean
   onFormChange: (form: {
@@ -297,6 +407,9 @@ function ProjectDialog(props: {
     status: ProjectStatus
     priority: Priority
     color: string
+    startedAt: string
+    dueAt: string
+    completedAt: string
   }) => void
   onSave: () => Promise<void>
 }) {
@@ -354,6 +467,26 @@ function ProjectDialog(props: {
             </select>
           </div>
         </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <DatePickerField
+            id="project-started-at"
+            label="开始日期"
+            value={form.startedAt}
+            onChange={(value) => onFormChange({ ...form, startedAt: value })}
+          />
+          <DatePickerField
+            id="project-due-at"
+            label="计划结束"
+            value={form.dueAt}
+            onChange={(value) => onFormChange({ ...form, dueAt: value })}
+          />
+          <DatePickerField
+            id="project-completed-at"
+            label="最终结束"
+            value={form.completedAt}
+            onChange={(value) => onFormChange({ ...form, completedAt: value })}
+          />
+        </div>
         <div className="space-y-2">
           <Label>颜色</Label>
           <div className="flex gap-2">
@@ -381,4 +514,92 @@ function ProjectDialog(props: {
       </DialogFooter>
     </DialogContent>
   )
+}
+
+function ProjectGantt(props: {
+  projects: ProjectRecord[]
+}) {
+  // 轻量项目甘特图：按项目自身日期区间生成条形时间轴，缺省时用更新时间做占位。
+  const dates = props.projects.flatMap((project) => [project.startedAt, project.dueAt, project.completedAt]).filter(Boolean) as string[]
+  const startDate = parseDate(dates[0] || todayISO())
+  const endDate = parseDate(dates.at(-1) || todayISO())
+  const safeEndDate = endDate < startDate ? startDate : endDate
+  const totalDays = Math.max(1, Math.ceil((safeEndDate.getTime() - startDate.getTime()) / DAY_MS) + 1)
+  const dayColumns = Array.from({ length: Math.min(totalDays, 28) }, (_, index) => addDays(startDate, index))
+
+  return (
+    <div className="space-y-3 overflow-x-auto">
+      <div className="min-w-[820px]">
+        <div className="grid" style={{ gridTemplateColumns: `240px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
+          <div className="px-2 py-2 text-xs font-medium text-neutral-500">项目</div>
+          {dayColumns.map((day) => (
+            <div key={day.toISOString()} className="px-1 py-2 text-center text-[11px] text-neutral-500">
+              {formatTimelineDay(day)}
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          {props.projects.map((project) => {
+            const start = parseDate(project.startedAt || startDate.toISOString())
+            const end = parseDate(project.dueAt || project.completedAt || project.startedAt || endDate.toISOString())
+            const safeStart = start < startDate ? startDate : start
+            const safeEnd = end < safeStart ? safeStart : end
+            const startIndex = Math.max(0, Math.floor((safeStart.getTime() - startDate.getTime()) / DAY_MS))
+            const span = Math.max(1, Math.floor((safeEnd.getTime() - safeStart.getTime()) / DAY_MS) + 1)
+            return (
+              <Link
+                key={project.id}
+                href={`/projects/${project.id}?view=gantt`}
+                className="grid items-center gap-2 rounded-2xl border border-neutral-200 bg-neutral-50 px-2 py-3 hover:bg-white"
+                style={{ gridTemplateColumns: `240px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}
+              >
+                <div className="min-w-0 px-2">
+                  <p className="truncate text-sm font-semibold">{project.title}</p>
+                  <p className="text-[11px] text-neutral-500">
+                    {STATUS_TEXT[project.status]} · {project.startedAt || "未开始"} → {project.dueAt || project.completedAt || "未结束"}
+                  </p>
+                </div>
+                <div className="relative col-span-full grid" style={{ gridTemplateColumns: `240px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
+                  <div
+                    className="col-start-2 row-start-1 my-1.5 h-7 rounded-xl px-2 py-1 text-xs text-white shadow-sm"
+                    style={{
+                      gridColumn: `${startIndex + 2} / span ${Math.min(span, dayColumns.length - startIndex)}`,
+                      backgroundColor: project.color || "#2563eb",
+                    }}
+                  >
+                    <span className="block truncate">{PRIORITY_TEXT[project.priority]}</span>
+                  </div>
+                </div>
+              </Link>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function getProjectHref(projectId: string, viewMode: ProjectsViewMode) {
+  // 一级页面的视图决定二级页默认打开的布局。
+  const detailView = viewMode === "cards" ? "board" : viewMode
+  return `/projects/${projectId}?view=${detailView}`
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function parseDate(value: string) {
+  return new Date(`${value}T00:00:00`)
+}
+
+function addDays(date: Date, offset: number) {
+  return new Date(date.getTime() + offset * DAY_MS)
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function formatTimelineDay(date: Date) {
+  return `${date.getMonth() + 1}/${date.getDate()}`
 }

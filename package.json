@@ -7,11 +7,8 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "format": "prettier --write \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit",
-    "electron:start": "cd electron && npm run start",
-    "electron:dev": "cd electron && ELECTRON_RENDERER_URL=http://localhost:3000 npm run start"
+    "electron:dev": "concurrently \"npm run dev\" \"cd electron && ELECTRON_RENDERER_URL=http://localhost:3000 npm run start\"",
+    "electron:prod": "concurrently \"npm run start\" \"npx wait-on http://localhost:3000 && cd electron && npm run start\""
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
@@ -35,6 +32,7 @@
     "@tiptap/react": "^3.23.5",
     "@tiptap/starter-kit": "^3.23.5",
     "clsx": "^2.1.1",
+    "date-fns": "^4.4.0",
     "lodash.throttle": "^4.1.1",
     "lucide-react": "^1.8.0",
     "markdown-it": "^14.1.1",
@@ -42,6 +40,7 @@
     "next-themes": "^0.4.6",
     "radix-ui": "^1.4.3",
     "react": "^19.2.4",
+    "react-day-picker": "^10.0.1",
     "react-dom": "^19.2.4",
     "react-hotkeys-hook": "^5.3.2",
     "shadcn": "^4.2.0",
@@ -60,6 +59,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/turndown": "^5.0.6",
     "class-variance-authority": "^0.7.1",
+    "concurrently": "^10.0.3",
     "eslint": "^9.39.4",
     "eslint-config-next": "16.1.7",
     "postcss": "^8",

@@ -113,6 +113,7 @@ type HoraDBBridge = {
     color?: string | null
     isCompleted?: boolean
     dueAt?: string | null
+    startedAt?: string | null
   }) => Promise<TaskRecord | null>
   updateTask: (input: Omit<Partial<TaskRecord>, "isCompleted"> & { id: string; isCompleted?: boolean | 0 | 1 }) => Promise<TaskRecord | null>
   updateTaskStatus: (input: { id: string; status?: TaskRecord["status"]; done?: boolean }) => Promise<TaskRecord | null>

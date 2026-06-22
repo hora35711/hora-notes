@@ -165,6 +165,7 @@ export async function createTask(input: {
   color?: string | null
   isCompleted?: boolean
   dueAt?: string | null
+  startedAt?: string | null
 }) {
   return requireHoraDB().createTask(input)
 }

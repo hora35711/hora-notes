@@ -4,7 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { MutableRefObject, ReactNode } from "react"
-import { useParams, useRouter } from "next/navigation"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { ArrowLeft, Check, FileDown, GripVertical, Info, Link as LinkIcon, Pencil, Plus, Trash2, Wand2, X } from "lucide-react"
 
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { DatePickerField } from "@/components/date-picker-field"
 import {
   Dialog,
   DialogClose,
@@ -43,6 +44,7 @@ import {
   deleteTask,
   getProject,
   linkNoteToProject,
+  listProjects,
   listNoteNodes,
   listNotesByProject,
   listRequirementsByProject,
@@ -88,6 +90,15 @@ const TASK_STATUS_TEXT: Record<TaskStatus, string> = {
 
 const COLOR_OPTIONS = ["#6b7280", "#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#9333ea"]
 const LAST_PROJECT_STORAGE_KEY = "hora_last_project_id"
+const PROJECT_VIEW_STORAGE_KEY = "hora_project_view_mode"
+
+type ProjectViewMode = "list" | "board" | "gantt"
+
+function normalizeProjectView(value: string | null) {
+  if (value === "list" || value === "board" || value === "gantt") return value
+  if (value === "cards") return "board"
+  return null
+}
 
 type ConnectionLine = {
   id: string
@@ -106,8 +117,10 @@ type NoteTreeNode = NoteNodeRow & {
 export default function ProjectDetailPage() {
   const params = useParams<{ projectId: string }>()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const projectId = params.projectId
 
+  const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [project, setProject] = useState<ProjectRecord | null>(null)
   const [requirements, setRequirements] = useState<RequirementRecord[]>([])
   const [tasks, setTasks] = useState<TaskRecord[]>([])
@@ -116,6 +129,7 @@ export default function ProjectDetailPage() {
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
   const [batchText, setBatchText] = useState("")
   const [viewMode, setViewMode] = useState<"task" | "requirement">("task")
+  const [layoutMode, setLayoutMode] = useState<ProjectViewMode>("list")
   const [statusFilter, setStatusFilter] = useState<TaskStatus | RequirementStatus | "all">("all")
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all")
   const [connectionLines, setConnectionLines] = useState<ConnectionLine[]>([])
@@ -146,18 +160,22 @@ export default function ProjectDetailPage() {
     priority: "normal" as Priority,
     color: COLOR_OPTIONS[0],
     requirementId: "",
+    startedAt: "",
     dueAt: "",
+    completedAt: "",
   })
 
   const refreshAll = async () => {
     if (!projectId) return
-    const [projectRow, requirementRows, taskRows, noteRows, noteNodeRows] = await Promise.all([
+    const [projectListRows, projectRow, requirementRows, taskRows, noteRows, noteNodeRows] = await Promise.all([
+      listProjects(),
       getProject(projectId),
       listRequirementsByProject(projectId),
       listTasksByProject(projectId),
       listNotesByProject(projectId),
       listNoteNodes(),
     ])
+    setProjects(projectListRows)
     setProject(projectRow)
     setRequirements(requirementRows)
     setTasks(taskRows)
@@ -170,6 +188,13 @@ export default function ProjectDetailPage() {
     if (projectId) {
       window.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, projectId)
     }
+    const requestedView = normalizeProjectView(searchParams.get("view"))
+    if (requestedView) {
+      setLayoutMode(requestedView)
+    } else {
+      const savedViewMode = normalizeProjectView(window.localStorage.getItem(PROJECT_VIEW_STORAGE_KEY))
+      if (savedViewMode) setLayoutMode(savedViewMode)
+    }
 
     const run = async () => {
       try {
@@ -181,7 +206,11 @@ export default function ProjectDetailPage() {
     }
 
     void run()
-  }, [projectId])
+  }, [projectId, searchParams])
+
+  useEffect(() => {
+    window.localStorage.setItem(PROJECT_VIEW_STORAGE_KEY, layoutMode)
+  }, [layoutMode])
 
   const progress = useMemo(() => {
     const total = tasks.length
@@ -354,7 +383,18 @@ export default function ProjectDetailPage() {
   }
 
   const openCreateTask = () => {
-    setTaskForm({ id: "", title: "", description: "", status: "todo", priority: "normal", color: COLOR_OPTIONS[0], requirementId: "", dueAt: "" })
+    setTaskForm({
+      id: "",
+      title: "",
+      description: "",
+      status: "todo",
+      priority: "normal",
+      color: COLOR_OPTIONS[0],
+      requirementId: "",
+      startedAt: "",
+      dueAt: "",
+      completedAt: "",
+    })
   }
 
   const openEditTask = (task: TaskRecord) => {
@@ -366,11 +406,13 @@ export default function ProjectDetailPage() {
       priority: task.priority,
       color: task.color || COLOR_OPTIONS[0],
       requirementId: task.requirementId || "",
+      startedAt: task.startedAt || "",
       dueAt: task.dueAt || "",
+      completedAt: task.completedAt || "",
     })
   }
 
-  const handleUpdateProjectField = async (field: "description" | "status" | "priority", value: string) => {
+  const handleUpdateProjectField = async (field: "description" | "status" | "priority" | "startedAt" | "dueAt" | "completedAt", value: string) => {
     if (!project) return
     try {
       setError(null)
@@ -409,7 +451,9 @@ export default function ProjectDetailPage() {
         priority: taskForm.priority,
         color: taskForm.color,
         requirementId: taskForm.requirementId || null,
+        startedAt: taskForm.startedAt || null,
         dueAt: taskForm.dueAt || null,
+        completedAt: taskForm.completedAt || null,
       }
       if (taskForm.id) {
         await updateTask({ id: taskForm.id, ...payload })
@@ -581,13 +625,35 @@ export default function ProjectDetailPage() {
             返回上一级
           </Link>
           <h1 className="text-2xl font-semibold tracking-tight">{project.title}</h1>
-          <Input
-            className="mt-3 max-w-xl"
-            value={project.description || ""}
-            onChange={(event) => setProject({ ...project, description: event.target.value })}
-            onBlur={(event) => void handleUpdateProjectField("description", event.target.value)}
-            placeholder="项目描述"
-          />
+          <div className="mt-3 flex max-w-3xl flex-wrap items-center gap-3">
+            <Input
+              className="min-w-[280px] flex-1"
+              value={project.description || ""}
+              onChange={(event) => setProject({ ...project, description: event.target.value })}
+              onBlur={(event) => void handleUpdateProjectField("description", event.target.value)}
+              placeholder="项目描述"
+            />
+            <div className="flex items-center gap-2">
+              <Label className="shrink-0 text-xs text-neutral-500" htmlFor="project-switcher">
+                项目切换
+              </Label>
+              <select
+                id="project-switcher"
+                value={project.id}
+                onChange={(event) => {
+                  const nextProjectId = event.target.value
+                  if (nextProjectId && nextProjectId !== project.id) {
+                    router.push(`/projects/${nextProjectId}?view=${layoutMode}`)
+                  }
+                }}
+                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                {projects.map((item) => (
+                  <option key={item.id} value={item.id}>{item.title}</option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Dialog>
@@ -671,7 +737,100 @@ export default function ProjectDetailPage() {
         </div>
       </section>
 
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+      {layoutMode === "board" ? (
+        <section className="flex min-h-0 flex-1 flex-col rounded-lg border border-neutral-200 bg-white p-4">
+          {/* 卡片视图把需求展开成列，方便像看看板一样扫任务。 */}
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-semibold">卡片视图</h2>
+              <p className="text-xs text-neutral-500">按需求分列展示任务卡片，适合看每个列里的待办。</p>
+            </div>
+            <Button type="button" variant="outline" onClick={() => void handleSaveBatch()}>
+              快速编辑
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <div className="grid min-w-max gap-4 pb-1 [grid-auto-flow:column] [grid-auto-columns:minmax(320px,320px)]">
+            {filteredRequirements.map((requirement) => {
+              const requirementTasks = filteredTasks.filter((task) => task.requirementId === requirement.id)
+              return (
+                <div key={requirement.id} className="flex min-h-[420px] flex-col rounded-2xl border border-neutral-200 bg-neutral-50/80 p-3">
+                  <div className="mb-3 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold">{requirement.title}</p>
+                      <p className="text-xs text-neutral-500">
+                        {REQUIREMENT_STATUS_TEXT[requirement.status]} · {PRIORITY_TEXT[requirement.priority]} · {requirementTasks.length} 个任务
+                      </p>
+                    </div>
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button type="button" size="icon-sm" variant="outline" onClick={() => openEditRequirement(requirement)}>
+                          <Pencil className="size-3.5" />
+                        </Button>
+                      </DialogTrigger>
+                      <RequirementDialog form={requirementForm} onFormChange={setRequirementForm} onSave={handleSaveRequirement} />
+                    </Dialog>
+                  </div>
+                  <div className="mb-3 rounded-xl border border-dashed border-neutral-300 bg-white p-2 text-xs text-neutral-500">
+                    <div className="flex items-center justify-between">
+                      <span>开始 {project.startedAt || "未设置"}</span>
+                      <span>结束 {project.dueAt || "未设置"}</span>
+                    </div>
+                  </div>
+                  <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+                    {requirementTasks.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-neutral-200 bg-white px-3 py-6 text-center text-sm text-neutral-500">
+                        还没有任务，先补一个吧。
+                      </div>
+                    ) : requirementTasks.map((task) => {
+                      const done = task.isCompleted === 1 || task.status === "done"
+                      return (
+                        <div key={task.id} className={done ? "rounded-xl border border-sky-200 bg-sky-50 p-3" : "rounded-xl border border-neutral-200 bg-white p-3"}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className={done ? "truncate text-sm font-medium text-sky-800 line-through" : "truncate text-sm font-medium"}>
+                                {task.title}
+                              </p>
+                              <p className="mt-1 text-xs text-neutral-500">
+                                {TASK_STATUS_TEXT[task.status]} · {PRIORITY_TEXT[task.priority]}
+                              </p>
+                            </div>
+                            <TaskStateToggle task={task} onToggle={async (_task, nextDone) => {
+                              await updateTaskStatus({ id: task.id, done: nextDone })
+                              await refreshAll()
+                            }} onStatusChange={async (_task, status) => {
+                              await updateTaskStatus({ id: task.id, status })
+                              await refreshAll()
+                            }} />
+                          </div>
+                          <div className="mt-3 flex items-center justify-between gap-2 text-xs text-neutral-500">
+                            <span>开始 {task.startedAt || "-"}</span>
+                            <span>计划 {task.dueAt || "-"}</span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+            </div>
+          </div>
+        </section>
+      ) : null}
+      {layoutMode === "gantt" ? (
+        <section className="flex min-h-0 flex-1 flex-col rounded-lg border border-neutral-200 bg-white p-4">
+          {/* 甘特视图强调时间线，方便快速看每个需求/任务的周期。 */}
+          <div className="mb-4">
+            <h2 className="text-base font-semibold">甘特视图</h2>
+            <p className="text-xs text-neutral-500">根据任务开始和计划结束日期生成时间条，适合看项目周期。</p>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <SimpleGantt project={project} requirements={filteredRequirements} tasks={filteredTasks} />
+          </div>
+        </section>
+      ) : null}
+      <div className={layoutMode === "list" ? "min-h-0 flex-1 overflow-y-auto pr-1" : "hidden"}>
         <section
           ref={lineHostRef}
           className="relative grid gap-6 xl:grid-cols-[minmax(260px,0.9fr)_minmax(60px,80px)_minmax(360px,1.4fr)]"
@@ -884,6 +1043,7 @@ function getTaskRowClassName(task: TaskRecord) {
 function TaskStateToggle(props: {
   task: TaskRecord
   onToggle: (row: TaskRecord, done: boolean) => Promise<void>
+  onStatusChange?: (row: TaskRecord, status: TaskStatus) => Promise<void>
 }) {
   const done = props.task.isCompleted === 1 || props.task.status === "done"
   const cancelled = props.task.status === "cancelled"
@@ -894,7 +1054,7 @@ function TaskStateToggle(props: {
         type="button"
         aria-label="取消状态"
         className="flex size-4 items-center justify-center rounded-[4px] border border-rose-300 bg-rose-50 text-rose-600"
-        onClick={() => void props.onToggle(props.task, false)}
+        onClick={() => void (props.onStatusChange ? props.onStatusChange(props.task, "todo") : props.onToggle(props.task, false))}
       >
         <X className="size-3" />
       </button>
@@ -1201,7 +1361,9 @@ function TaskList(props: {
     priority: Priority
     color: string
     requirementId: string
+    startedAt: string
     dueAt: string
+    completedAt: string
   }
   onFormChange: (form: {
     id: string
@@ -1211,7 +1373,9 @@ function TaskList(props: {
     priority: Priority
     color: string
     requirementId: string
+    startedAt: string
     dueAt: string
+    completedAt: string
   }) => void
   onSave: () => Promise<void>
 }) {
@@ -1351,7 +1515,9 @@ function TaskDialog(props: {
     priority: Priority
     color: string
     requirementId: string
+    startedAt: string
     dueAt: string
+    completedAt: string
   }
   requirements: RequirementRecord[]
   onFormChange: (form: {
@@ -1362,7 +1528,9 @@ function TaskDialog(props: {
     priority: Priority
     color: string
     requirementId: string
+    startedAt: string
     dueAt: string
+    completedAt: string
   }) => void
   onSave: () => Promise<void>
 }) {
@@ -1386,13 +1554,24 @@ function TaskDialog(props: {
           ))}
         </select>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="project-task-due-at">截止时间</Label>
-        <Input
+      <div className="grid gap-3 md:grid-cols-3">
+        <DatePickerField
+          id="project-task-started-at"
+          label="开始日期"
+          value={props.form.startedAt}
+          onChange={(value) => props.onFormChange({ ...props.form, startedAt: value })}
+        />
+        <DatePickerField
           id="project-task-due-at"
-          type="date"
+          label="计划结束"
           value={props.form.dueAt}
-          onChange={(event) => props.onFormChange({ ...props.form, dueAt: event.target.value })}
+          onChange={(value) => props.onFormChange({ ...props.form, dueAt: value })}
+        />
+        <DatePickerField
+          id="project-task-completed-at"
+          label="最终结束"
+          value={props.form.completedAt}
+          onChange={(value) => props.onFormChange({ ...props.form, completedAt: value })}
         />
       </div>
       <DialogFooter>
@@ -1400,6 +1579,97 @@ function TaskDialog(props: {
         <DialogClose asChild><Button type="button" onClick={() => void props.onSave()}>保存</Button></DialogClose>
       </DialogFooter>
     </DialogContent>
+  )
+}
+
+function SimpleGantt(props: {
+  project: ProjectRecord
+  requirements: RequirementRecord[]
+  tasks: TaskRecord[]
+}) {
+  // 轻量甘特图：优先用项目和任务里的实际日期，缺失时回退到项目周期。
+  const rows = props.requirements.map((requirement) => ({
+    id: requirement.id,
+    title: requirement.title,
+    color: requirement.color || "#6b7280",
+    items: props.tasks.filter((task) => task.requirementId === requirement.id),
+  }))
+
+  const dateValues = rows.flatMap((row) => row.items.flatMap((task) => [task.startedAt, task.dueAt, task.completedAt])).filter(Boolean) as string[]
+  if (props.project.startedAt) dateValues.push(props.project.startedAt)
+  if (props.project.dueAt) dateValues.push(props.project.dueAt)
+  if (props.project.completedAt) dateValues.push(props.project.completedAt)
+
+  const sortedDates = dateValues.sort()
+  const startDate = parseDate(sortedDates[0] || props.project.startedAt || props.project.dueAt || todayISO())
+  const endDate = parseDate(sortedDates.at(-1) || props.project.dueAt || props.project.completedAt || todayISO())
+  const safeEndDate = endDate < startDate ? startDate : endDate
+  const totalDays = Math.max(1, Math.ceil((safeEndDate.getTime() - startDate.getTime()) / DAY_MS) + 1)
+  const dayColumns = Array.from({ length: Math.min(totalDays, 28) }, (_, index) => addDays(startDate, index))
+
+  return (
+    <div className="space-y-4">
+      <div className="overflow-x-auto">
+        <div className="min-w-[760px] space-y-3">
+          <div className="grid" style={{ gridTemplateColumns: `220px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
+            <div className="px-2 py-2 text-xs font-medium text-neutral-500">需求 / 任务</div>
+            {dayColumns.map((day) => (
+              <div key={day.toISOString()} className="px-1 py-2 text-center text-[11px] text-neutral-500">
+                {formatTimelineDay(day)}
+              </div>
+            ))}
+          </div>
+
+          {rows.map((row) => {
+            const rowEntries = row.items.length > 0 ? row.items : [{ id: `${row.id}:empty`, title: "暂无任务", startedAt: null, dueAt: null, completedAt: null, status: "todo", priority: "normal", isCompleted: 0 as 0 | 1 }]
+            return (
+              <div key={row.id} className="rounded-2xl border border-neutral-200 bg-neutral-50/70 p-2">
+                <div className="mb-2 flex items-center justify-between px-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{row.title}</p>
+                    <p className="text-xs text-neutral-500">{row.items.length} 个任务</p>
+                  </div>
+                  <span className="size-3 rounded-full" style={{ backgroundColor: row.color }} />
+                </div>
+                <div className="space-y-2">
+          {rowEntries.map((task) => {
+                    const ganttTask = task as Pick<TaskRecord, "id" | "title" | "startedAt" | "dueAt" | "completedAt" | "status" | "priority" | "isCompleted">
+                    const start = parseDate(ganttTask.startedAt || props.project.startedAt || startDate.toISOString())
+                    const end = parseDate(ganttTask.dueAt || ganttTask.completedAt || ganttTask.startedAt || props.project.dueAt || props.project.completedAt || endDate.toISOString())
+                    const safeStart = start < startDate ? startDate : start
+                    const safeEnd = end < safeStart ? safeStart : end
+                    const startIndex = Math.max(0, Math.floor((safeStart.getTime() - startDate.getTime()) / DAY_MS))
+                    const span = Math.max(1, Math.floor((safeEnd.getTime() - safeStart.getTime()) / DAY_MS) + 1)
+                    const done = ganttTask.isCompleted === 1 || ganttTask.status === "done"
+                    return (
+                      <div key={ganttTask.id} className="grid items-center gap-2" style={{ gridTemplateColumns: `220px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
+                        <div className="min-w-0 px-2 py-1">
+                          <p className={done ? "truncate text-sm text-neutral-400 line-through" : "truncate text-sm font-medium"}>{ganttTask.title}</p>
+                          <p className="text-[11px] text-neutral-500">
+                            {done ? "已完成" : TASK_STATUS_TEXT[ganttTask.status]} · {ganttTask.startedAt || "未开始"} → {ganttTask.dueAt || ganttTask.completedAt || "未结束"}
+                          </p>
+                        </div>
+                        <div className="relative col-span-full grid" style={{ gridTemplateColumns: `220px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
+                          <div
+                            className="col-start-2 row-start-1 my-2 h-7 rounded-xl px-2 py-1 text-xs text-white shadow-sm"
+                            style={{
+                              gridColumn: `${startIndex + 2} / span ${Math.min(span, dayColumns.length - startIndex)}`,
+                              backgroundColor: done ? "#0f172a" : row.color,
+                            }}
+                          >
+                            <span className="block truncate">{done ? "完成" : PRIORITY_TEXT[ganttTask.priority]}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1469,4 +1739,22 @@ function EntityForm<TStatus extends string, TForm extends EntityFormState<TStatu
       </div>
     </div>
   )
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function parseDate(value: string) {
+  return new Date(`${value}T00:00:00`)
+}
+
+function addDays(date: Date, offset: number) {
+  return new Date(date.getTime() + offset * DAY_MS)
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function formatTimelineDay(date: Date) {
+  return `${date.getMonth() + 1}/${date.getDate()}`
 }
