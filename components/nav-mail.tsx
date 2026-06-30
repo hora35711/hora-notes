@@ -18,13 +18,13 @@ type NavMailProps = {
 export function NavMail({ items }: NavMailProps) {
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>Mail</SidebarGroupLabel>
+      <SidebarGroupLabel className="text-muted-foreground">Mail</SidebarGroupLabel>
 
       <SidebarGroupContent>
         <SidebarMenu>
           {items.map((item) => (
             <SidebarMenuItem key={item.title}>
-              <SidebarMenuButton>{item.title}</SidebarMenuButton>
+              <SidebarMenuButton className="h-8 px-2">{item.title}</SidebarMenuButton>
             </SidebarMenuItem>
           ))}
         </SidebarMenu>

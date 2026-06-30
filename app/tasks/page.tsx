@@ -7,9 +7,11 @@ import Link from "next/link"
 import { Check, CheckCircle2, ChevronDown, Circle, Filter, Pencil, RotateCcw, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { DatePickerField } from "@/components/date-picker-field"
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -25,7 +27,23 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
+import { saveProjectsDetailHref } from "@/lib/projects-navigation-state"
+import {
+  getPriorityToneClassName,
+  getStatusToneClassName,
+  PRIORITY_LABEL,
+  TASK_STATUS_LABEL,
+  compareByStatusThenPriority,
+} from "@/lib/project-style"
 import {
   listAllTasks,
   listProjects,
@@ -40,22 +58,12 @@ import {
   type TaskStatus,
 } from "@/lib/hora-db"
 
-const TASK_STATUS_TEXT: Record<TaskStatus, string> = {
-  todo: "待处理",
-  doing: "进行中",
-  done: "完成",
-  cancelled: "取消",
-}
-
-const PRIORITY_TEXT: Record<Priority, string> = {
-  low: "低",
-  normal: "普通",
-  high: "高",
-  urgent: "紧急",
-}
+const TASK_STATUS_TEXT = TASK_STATUS_LABEL
+const PRIORITY_TEXT = PRIORITY_LABEL
 
 const TASK_FILTER_STORAGE_KEY = "hora_tasks_filters"
 const EMPTY_FILTERS: TaskFilters = {}
+const ALL_FILTER_VALUE = "__all__"
 
 export default function TasksPage() {
   const [projects, setProjects] = useState<ProjectRecord[]>([])
@@ -97,6 +105,19 @@ export default function TasksPage() {
 
     void run()
   }, [])
+
+  useEffect(() => {
+    // 监听其它页面写入数据后的广播，保证 project / tasks 两边看到同一份最新状态。
+    const refreshFromBroadcast = () => {
+      void refreshTasks()
+    }
+
+    window.addEventListener("hora:db-updated", refreshFromBroadcast)
+
+    return () => {
+      window.removeEventListener("hora:db-updated", refreshFromBroadcast)
+    }
+  }, [refreshTasks])
 
   const visibleRequirements = useMemo(() => {
     if (!filters.projectId) return requirements
@@ -184,13 +205,13 @@ export default function TasksPage() {
     <main className="flex h-[calc(100vh-4rem)] w-full flex-col overflow-hidden pt-1">
       <header className="shrink-0">
         <h1 className="text-2xl font-semibold tracking-tight">Tasks</h1>
-        <p className="mt-1 text-xs text-neutral-500">跨项目执行视图，数据来自同一张 tasks 表。</p>
+        <p className="mt-1 text-xs text-muted-foreground">跨项目执行视图，数据来自同一张 tasks 表。</p>
       </header>
 
       {error ? <p className="text-sm text-rose-600">{error}</p> : null}
 
-      <section className="mt-3 shrink-0 rounded-lg border border-neutral-200 bg-white p-2.5">
-        <div className="mb-2 flex items-center justify-between gap-2 text-xs font-medium">
+      <section className="mt-3 shrink-0 rounded-xl border bg-card p-3 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-2 text-xs font-medium">
           <div className="flex items-center gap-2">
             <Filter className="size-3.5" />
             筛选
@@ -200,27 +221,50 @@ export default function TasksPage() {
             清除选项
           </Button>
         </div>
-        <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-4">
-          <select
-            value={filters.projectId || ""}
-            onChange={(event) => void updateFilters({ ...filters, projectId: event.target.value || undefined, requirementId: undefined })}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+          <Select
+            value={filters.projectId || ALL_FILTER_VALUE}
+            onValueChange={(value) =>
+              void updateFilters({
+                ...filters,
+                projectId: value === ALL_FILTER_VALUE ? undefined : value,
+                requirementId: undefined,
+              })
+            }
           >
-            <option value="">全部项目</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.title}</option>
-            ))}
-          </select>
-          <select
-            value={filters.requirementId || ""}
-            onChange={(event) => void updateFilters({ ...filters, requirementId: event.target.value || undefined })}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+            <SelectTrigger size="sm" className="w-full text-xs">
+              <SelectValue placeholder="全部项目" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_FILTER_VALUE}>全部项目</SelectItem>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  {project.title}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={filters.requirementId || ALL_FILTER_VALUE}
+            onValueChange={(value) =>
+              void updateFilters({
+                ...filters,
+                requirementId: value === ALL_FILTER_VALUE ? undefined : value,
+              })
+            }
           >
-            <option value="">全部需求</option>
-            {visibleRequirements.map((requirement) => (
-              <option key={requirement.id} value={requirement.id}>{requirement.title}</option>
-            ))}
-          </select>
+            <SelectTrigger size="sm" className="w-full text-xs">
+              <SelectValue placeholder="全部需求" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_FILTER_VALUE}>全部需求</SelectItem>
+              {visibleRequirements.map((requirement) => (
+                <SelectItem key={requirement.id} value={requirement.id}>
+                  {requirement.title}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button type="button" variant="outline" className="h-8 justify-between px-2 text-xs">
@@ -228,40 +272,44 @@ export default function TasksPage() {
                 <ChevronDown className="size-3.5" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent className="text-xs">
+            <DropdownMenuContent className="w-56 text-xs">
               {Object.entries(TASK_STATUS_TEXT).map(([value, label]) => (
-                <button
+                <DropdownMenuCheckboxItem
                   key={value}
-                  type="button"
-                  onClick={() => void toggleStatusFilter(value as TaskStatus)}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-neutral-100"
+                  checked={(filters.statuses || []).includes(value as TaskStatus)}
+                  onCheckedChange={() => void toggleStatusFilter(value as TaskStatus)}
                 >
-                  <span className={(filters.statuses || []).includes(value as TaskStatus)
-                    ? "flex size-3.5 items-center justify-center rounded border border-neutral-900 bg-neutral-900 text-white"
-                    : "size-3.5 rounded border border-neutral-300"
-                  }>
-                    {(filters.statuses || []).includes(value as TaskStatus) ? <Check className="size-3" /> : null}
-                  </span>
                   {label}
-                </button>
+                </DropdownMenuCheckboxItem>
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          <select
-            value={filters.priority || ""}
-            onChange={(event) => void updateFilters({ ...filters, priority: (event.target.value || "") as Priority | "" })}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+          <Select
+            value={filters.priority || ALL_FILTER_VALUE}
+            onValueChange={(value) =>
+              void updateFilters({
+                ...filters,
+                priority: value === ALL_FILTER_VALUE ? undefined : (value as Priority),
+              })
+            }
           >
-            <option value="">全部优先级</option>
-            {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
+              <SelectTrigger size="sm" className="w-full text-xs">
+                <SelectValue placeholder="全部优先级" />
+              </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_FILTER_VALUE}>全部优先级</SelectItem>
+              {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </section>
 
-      <section className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-200 bg-white">
-        <div className="sticky top-0 z-10 grid grid-cols-[1.5fr_0.8fr_0.8fr_1fr_1fr_0.8fr_1fr_0.5fr] border-b bg-neutral-50 px-4 py-2 text-xs font-medium text-neutral-500">
+      <section className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-xl border bg-card shadow-sm">
+        <div className="sticky top-0 z-10 grid grid-cols-[1.5fr_0.8fr_0.8fr_1fr_1fr_0.8fr_1fr_0.5fr] border-b bg-muted/50 px-4 py-2 text-xs font-medium text-muted-foreground">
           <span>任务</span>
           <span>状态</span>
           <span>优先级</span>
@@ -278,28 +326,42 @@ export default function TasksPage() {
             <article key={task.id} className="grid grid-cols-[1.5fr_0.8fr_0.8fr_1fr_1fr_0.8fr_1fr_0.5fr] items-center border-b px-4 py-3 text-sm last:border-b-0">
               <div className="flex min-w-0 items-center gap-3">
                 <TaskStateToggle task={task} onToggle={handleToggleDone} onStatusChange={handleChangeStatus} />
-                <span className="size-3 rounded-full" style={{ backgroundColor: task.color || "#6b7280" }} />
-                <span className={done ? "truncate text-neutral-400 line-through" : "truncate font-medium"}>{task.title}</span>
+                <span className="size-3 rounded-full border border-border" style={{ backgroundColor: task.color || "#8AA8E8" }} />
+                <span className={done ? "truncate font-medium text-muted-foreground line-through" : "truncate font-medium"}>{task.title}</span>
               </div>
-              <select
+              <Select
                 value={task.status}
-                onChange={(event) => void handleChangeStatus(task, event.target.value as TaskStatus)}
-                className="h-8 w-24 rounded-md border border-input bg-background px-2 text-xs"
+                onValueChange={(value) => void handleChangeStatus(task, value as TaskStatus)}
               >
-                {Object.entries(TASK_STATUS_TEXT).map(([value, label]) => (
-                  <option key={value} value={value}>{label}</option>
-                ))}
-              </select>
-              <span>{PRIORITY_TEXT[task.priority]}</span>
-              <Link href={`/projects/${task.projectId}`} className="truncate hover:underline">{task.projectTitle}</Link>
-              <span className="truncate text-neutral-500">{task.requirementTitle || "无需求"}</span>
+                <SelectTrigger size="sm" className={cn("w-28 text-xs", getStatusToneClassName(task.status))}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(TASK_STATUS_TEXT).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Badge variant="outline" className={getPriorityToneClassName(task.priority)}>
+                {PRIORITY_TEXT[task.priority]}
+              </Badge>
+              <Link
+                href={`/projects/${task.projectId}`}
+                className="truncate hover:underline"
+                onClick={() => saveProjectsDetailHref(`/projects/${task.projectId}`)}
+              >
+                {task.projectTitle}
+              </Link>
+              <span className="truncate text-muted-foreground">{task.requirementTitle || "无需求"}</span>
               {/* 三行日期把任务周期压缩成一个更容易扫视的摘要。 */}
-              <span className="text-xs text-neutral-500">
+              <span className="text-xs text-muted-foreground">
                 <span className="block">{task.startedAt || "未开始"}</span>
                 <span className="block">{task.dueAt || "未计划"}</span>
                 <span className="block">{task.completedAt || "未完成"}</span>
               </span>
-              <span className="text-xs text-neutral-500">{task.updatedAt?.slice(0, 10)}</span>
+              <span className="text-xs text-muted-foreground">{task.updatedAt?.slice(0, 10)}</span>
               <div className="flex justify-end">
                 <Dialog>
                   <DialogTrigger asChild>
@@ -320,7 +382,7 @@ export default function TasksPage() {
       </section>
 
       {tasks.length === 0 ? (
-        <div className="flex items-center gap-2 text-sm text-neutral-500">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
           {(filters.statuses || []).includes("done") ? <CheckCircle2 className="size-4" /> : <Circle className="size-4" />}
           暂无任务。
         </div>
@@ -376,27 +438,39 @@ function TaskEditDialog(props: {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
             <Label>状态</Label>
-            <select
+            <Select
               value={props.form.status}
-              onChange={(event) => props.onFormChange({ ...props.form, status: event.target.value as TaskStatus })}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              onValueChange={(value) => props.onFormChange({ ...props.form, status: value as TaskStatus })}
             >
-              {Object.entries(TASK_STATUS_TEXT).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(TASK_STATUS_TEXT).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-2">
             <Label>优先级</Label>
-            <select
+            <Select
               value={props.form.priority}
-              onChange={(event) => props.onFormChange({ ...props.form, priority: event.target.value as Priority })}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              onValueChange={(value) => props.onFormChange({ ...props.form, priority: value as Priority })}
             >
-              {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
         <div className="grid gap-3 md:grid-cols-3">
@@ -446,7 +520,7 @@ function TaskStateToggle(props: {
         type="button"
         aria-label="恢复任务"
         onClick={() => void props.onStatusChange(props.task, "todo")}
-        className="flex size-4 items-center justify-center rounded-[4px] border border-rose-300 bg-rose-50 text-rose-600"
+        className="flex size-4 items-center justify-center rounded-[4px] border border-border bg-muted text-muted-foreground"
       >
         <X className="size-3" />
       </button>
@@ -459,7 +533,7 @@ function TaskStateToggle(props: {
       aria-label={done ? "取消完成" : "完成任务"}
       onClick={() => void props.onToggle(props.task, !done)}
       className={done
-        ? "flex size-4 items-center justify-center rounded-[4px] border border-primary bg-primary text-primary-foreground"
+        ? "flex size-4 items-center justify-center rounded-[4px] border border-sky-300 bg-sky-100 text-sky-700"
         : "size-4 rounded-[4px] border border-input bg-background"
       }
     >
@@ -496,12 +570,6 @@ function formatStatusFilter(statuses: TaskStatus[] | undefined) {
 
 function sortTasksForDisplay(rows: TaskRecord[]) {
   return [...rows].sort((a, b) => {
-    const aDone = a.isCompleted === 1 || a.status === "done"
-    const bDone = b.isCompleted === 1 || b.status === "done"
-    if (aDone !== bDone) return aDone ? 1 : -1
-    if (aDone && bDone) {
-      return String(b.completedAt || b.updatedAt).localeCompare(String(a.completedAt || a.updatedAt))
-    }
-    return a.sortOrder - b.sortOrder
+    return compareByStatusThenPriority(a, b)
   })
 }

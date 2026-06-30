@@ -20,7 +20,9 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DatePickerField } from "@/components/date-picker-field"
 import {
@@ -35,7 +37,20 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
+import {
+  compareByStatusThenPriority,
+  getPriorityToneClassName,
+  getStatusToneClassName,
+  PRIORITY_LABEL,
+  PROJECT_STATUS_LABEL,
+  REQUIREMENT_STATUS_LABEL,
+  TASK_STATUS_LABEL,
+} from "@/lib/project-style"
 import {
   createNoteNode,
   createRequirement,
@@ -66,31 +81,19 @@ import {
   type TaskStatus,
   unlinkNoteFromProject,
 } from "@/lib/hora-db"
+import {
+  saveProjectsDetailSnapshot,
+  saveProjectsListSnapshot,
+} from "@/lib/projects-navigation-state"
 
-const PRIORITY_TEXT: Record<Priority, string> = {
-  low: "低",
-  normal: "普通",
-  high: "高",
-  urgent: "紧急",
-}
-
-const REQUIREMENT_STATUS_TEXT: Record<RequirementStatus, string> = {
-  todo: "待处理",
-  doing: "进行中",
-  done: "完成",
-  archived: "归档",
-}
-
-const TASK_STATUS_TEXT: Record<TaskStatus, string> = {
-  todo: "待处理",
-  doing: "进行中",
-  done: "完成",
-  cancelled: "取消",
-}
-
-const COLOR_OPTIONS = ["#6b7280", "#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#9333ea"]
-const LAST_PROJECT_STORAGE_KEY = "hora_last_project_id"
-const PROJECT_VIEW_STORAGE_KEY = "hora_project_view_mode"
+// 项目详情的颜色选项也走低饱和方案，尽量和列表页保持一致。
+const COLOR_OPTIONS = ["#8AA8E8", "#8CC9A1", "#E2B36B", "#E8C57A", "#E28A8A", "#A8B3C7"]
+// 页面内沿用旧变量名，方便只替换数据来源，不大改模板结构。
+const PRIORITY_TEXT = PRIORITY_LABEL
+const REQUIREMENT_STATUS_TEXT = REQUIREMENT_STATUS_LABEL
+const TASK_STATUS_TEXT = TASK_STATUS_LABEL
+const PROJECT_UI_STORAGE_PREFIX = "hora_project_ui_state"
+const ALL_FILTER_VALUE = "__all__"
 
 type ProjectViewMode = "list" | "board" | "gantt"
 
@@ -98,6 +101,35 @@ function normalizeProjectView(value: string | null) {
   if (value === "list" || value === "board" || value === "gantt") return value
   if (value === "cards") return "board"
   return null
+}
+
+// 每个项目单独保存自己的视图状态，避免切换项目后把布局和筛选一起带跑。
+function getProjectUiStorageKey(projectId: string) {
+  return `${PROJECT_UI_STORAGE_PREFIX}:${projectId}`
+}
+
+type StoredProjectUiState = {
+  viewMode?: "task" | "requirement"
+  layoutMode?: ProjectViewMode
+  statusFilter?: TaskStatus | RequirementStatus | "all"
+  priorityFilter?: Priority | "all"
+}
+
+// 读取项目页的本地 UI 状态，项目之间互不影响。
+function loadStoredProjectUiState(projectId: string): StoredProjectUiState {
+  if (typeof window === "undefined") return {}
+  const raw = window.localStorage.getItem(getProjectUiStorageKey(projectId))
+  if (!raw) return {}
+  try {
+    return JSON.parse(raw) as StoredProjectUiState
+  } catch {
+    return {}
+  }
+}
+
+// 写回项目页 UI 状态，保证切换后返回还能保持原样。
+function saveStoredProjectUiState(projectId: string, state: StoredProjectUiState) {
+  window.localStorage.setItem(getProjectUiStorageKey(projectId), JSON.stringify(state))
 }
 
 type ConnectionLine = {
@@ -185,16 +217,17 @@ export default function ProjectDetailPage() {
   }
 
   useEffect(() => {
-    if (projectId) {
-      window.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, projectId)
-    }
     const requestedView = normalizeProjectView(searchParams.get("view"))
-    if (requestedView) {
-      setLayoutMode(requestedView)
-    } else {
-      const savedViewMode = normalizeProjectView(window.localStorage.getItem(PROJECT_VIEW_STORAGE_KEY))
-      if (savedViewMode) setLayoutMode(savedViewMode)
-    }
+    const savedState = loadStoredProjectUiState(projectId)
+    const nextViewMode = savedState.viewMode === "task" || savedState.viewMode === "requirement" ? savedState.viewMode : "task"
+    const nextStatusFilter = savedState.statusFilter || "all"
+    const nextPriorityFilter = savedState.priorityFilter || "all"
+    const nextLayoutMode = requestedView || savedState.layoutMode || "list"
+
+    setViewMode(nextViewMode)
+    setStatusFilter(nextStatusFilter)
+    setPriorityFilter(nextPriorityFilter)
+    setLayoutMode(nextLayoutMode)
 
     const run = async () => {
       try {
@@ -209,8 +242,10 @@ export default function ProjectDetailPage() {
   }, [projectId, searchParams])
 
   useEffect(() => {
-    window.localStorage.setItem(PROJECT_VIEW_STORAGE_KEY, layoutMode)
-  }, [layoutMode])
+    if (!projectId) return
+    saveStoredProjectUiState(projectId, { viewMode, layoutMode, statusFilter, priorityFilter })
+    saveProjectsDetailSnapshot(projectId, layoutMode)
+  }, [layoutMode, priorityFilter, projectId, statusFilter, viewMode])
 
   const progress = useMemo(() => {
     const total = tasks.length
@@ -240,6 +275,18 @@ export default function ProjectDetailPage() {
     void run()
   }, [progress.total, progress.value, project])
 
+  useEffect(() => {
+    // 监听外部更新广播，保证项目详情和全局 Tasks 页之间的数据是同一份。
+    const refreshFromBroadcast = () => {
+      void refreshAll()
+    }
+
+    window.addEventListener("hora:db-updated", refreshFromBroadcast)
+    return () => {
+      window.removeEventListener("hora:db-updated", refreshFromBroadcast)
+    }
+  }, [projectId])
+
   const requirementDoneMap = useMemo(() => {
     const nextMap = new Map<string, boolean>()
     for (const requirement of requirements) {
@@ -262,9 +309,13 @@ export default function ProjectDetailPage() {
     return sortRequirementsForDisplay(requirements, requirementDoneMap, tasks)
   }, [requirementDoneMap, requirements, tasks])
 
+  const requirementOrderMap = useMemo(() => {
+    return new Map(sortedRequirements.map((row, index) => [row.id, index]))
+  }, [sortedRequirements])
+
   const sortedTasks = useMemo(() => {
-    return sortTasksForDisplay(tasks)
-  }, [tasks])
+    return sortTasksForDisplay(tasks, requirementOrderMap)
+  }, [requirementOrderMap, tasks])
 
   const filteredTasks = useMemo(() => {
     // 任务模式按任务字段过滤；需求模式则由命中的需求反查任务，保持两侧联动。
@@ -317,11 +368,6 @@ export default function ProjectDetailPage() {
   }, [filteredRequirements.length])
 
   useEffect(() => {
-    // 切换任务/需求模式时状态枚举不同，重置状态筛选避免旧值套到另一类数据上。
-    setStatusFilter("all")
-  }, [viewMode])
-
-  useEffect(() => {
     if (exportNoticeState !== "visible") return
 
     // 导出成功提醒先停留，再淡出，完整生命周期约 2 秒。
@@ -355,7 +401,7 @@ export default function ProjectDetailPage() {
         y1: requirementRect.top - hostRect.top + requirementRect.height / 2,
         x2: taskRect.left - hostRect.left,
         y2: taskRect.top - hostRect.top + taskRect.height / 2,
-        color: requirement.color || "#6b7280",
+        color: requirement.color || "#8AA8E8",
       })
     }
     setConnectionLines(nextLines)
@@ -613,49 +659,62 @@ export default function ProjectDetailPage() {
   }
 
   if (!project) {
-    return <main className="w-full p-6 text-sm text-neutral-500 md:p-8">正在加载项目...</main>
+    return <main className="w-full p-6 text-sm text-muted-foreground md:p-8">正在加载项目...</main>
   }
 
   return (
     <main className="flex h-[calc(100vh-4rem)] w-full flex-col gap-3 overflow-hidden pt-1">
       <header className="flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <Link href="/projects?list=1" className="mb-3 inline-flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-900">
+        <div className="min-w-0 flex-1">
+          <Link
+            href="/projects?list=1"
+            className="mb-3 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+            onClick={() => {
+              // 返回一级时明确写入“下次进入项目模块先看列表”的意图。
+              saveProjectsListSnapshot()
+            }}
+          >
             <ArrowLeft className="size-4" />
             返回上一级
           </Link>
           <h1 className="text-2xl font-semibold tracking-tight">{project.title}</h1>
-          <div className="mt-3 flex max-w-3xl flex-wrap items-center gap-3">
+          <div className="mt-3 flex max-w-full flex-wrap items-center gap-2 md:gap-3">
             <Input
-              className="min-w-[280px] flex-1"
+              className="min-w-[220px] flex-1"
               value={project.description || ""}
               onChange={(event) => setProject({ ...project, description: event.target.value })}
               onBlur={(event) => void handleUpdateProjectField("description", event.target.value)}
               placeholder="项目描述"
             />
             <div className="flex items-center gap-2">
-              <Label className="shrink-0 text-xs text-neutral-500" htmlFor="project-switcher">
+              <Label className="shrink-0 text-xs text-muted-foreground" htmlFor="project-switcher">
                 项目切换
               </Label>
-              <select
-                id="project-switcher"
+              <Select
                 value={project.id}
-                onChange={(event) => {
-                  const nextProjectId = event.target.value
-                  if (nextProjectId && nextProjectId !== project.id) {
-                    router.push(`/projects/${nextProjectId}?view=${layoutMode}`)
+                onValueChange={(value) => {
+                  if (value && value !== project.id) {
+                    // 切换项目后仍然保持在详情入口语义，方便从模块外再次回来时继续看项目详情。
+                    saveProjectsDetailSnapshot(value, layoutMode)
+                    router.push(`/projects/${value}?view=${layoutMode}`)
                   }
                 }}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
               >
-                {projects.map((item) => (
-                  <option key={item.id} value={item.id}>{item.title}</option>
-                ))}
-              </select>
+                <SelectTrigger id="project-switcher" className="h-9 w-48">
+                  <SelectValue placeholder="切换项目" />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects.map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 md:justify-end">
           <Dialog>
             <DialogTrigger asChild>
               <Button type="button" variant="outline">
@@ -673,42 +732,46 @@ export default function ProjectDetailPage() {
             <FileDown className="size-4" />
             导出文件
           </Button>
-          <div className="flex h-9 rounded-md border border-neutral-200 bg-neutral-50 p-0.5 text-xs">
-            <button
-              type="button"
-              onClick={() => setViewMode("requirement")}
-              className={viewMode === "requirement" ? "rounded bg-white px-3 font-medium shadow-sm" : "px-3 text-neutral-500"}
-            >
-              需求
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode("task")}
-              className={viewMode === "task" ? "rounded bg-white px-3 font-medium shadow-sm" : "px-3 text-neutral-500"}
-            >
-              任务
-            </button>
-          </div>
-          <select
-            value={statusFilter}
-            onChange={(event) => setStatusFilter(event.target.value as TaskStatus | RequirementStatus | "all")}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+          <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as "task" | "requirement")} className="w-auto">
+            <TabsList className="grid h-9 w-40 grid-cols-2">
+              <TabsTrigger value="requirement">需求</TabsTrigger>
+              <TabsTrigger value="task">任务</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <Select
+            value={statusFilter === "all" ? ALL_FILTER_VALUE : statusFilter}
+            onValueChange={(value) =>
+              setStatusFilter(value === ALL_FILTER_VALUE ? "all" : (value as TaskStatus | RequirementStatus))
+            }
           >
-            <option value="all">全部{viewMode === "task" ? "任务" : "需求"}状态</option>
-            {Object.entries(activeStatusText).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
-          <select
-            value={priorityFilter}
-            onChange={(event) => setPriorityFilter(event.target.value as Priority | "all")}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder={`全部${viewMode === "task" ? "任务" : "需求"}状态`} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_FILTER_VALUE}>全部{viewMode === "task" ? "任务" : "需求"}状态</SelectItem>
+              {Object.entries(activeStatusText).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={priorityFilter === "all" ? ALL_FILTER_VALUE : priorityFilter}
+            onValueChange={(value) => setPriorityFilter(value === ALL_FILTER_VALUE ? "all" : (value as Priority))}
           >
-            <option value="all">全部紧急程度</option>
-            {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
+            <SelectTrigger className="w-36">
+              <SelectValue placeholder="全部紧急程度" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_FILTER_VALUE}>全部紧急程度</SelectItem>
+              {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </header>
 
@@ -724,116 +787,140 @@ export default function ProjectDetailPage() {
         </Alert>
       ) : null}
 
-      <section className="shrink-0 rounded-lg border border-neutral-200 bg-white p-3">
-        <div className="flex items-center justify-between text-sm">
-          <span className="font-medium">整体进度</span>
-          <span className="text-neutral-500">{progress.completed}/{progress.total} · {progress.value}%</span>
-        </div>
-        <div className="mt-3 h-3 overflow-hidden rounded-full bg-neutral-100">
-          <div
-            className="h-3 rounded-full bg-[linear-gradient(90deg,#ef4444_0%,#f59e0b_30%,#38bdf8_60%,#22c55e_100%)] transition-all duration-500"
-            style={{ width: `${progress.value}%` }}
+      <Card className="shrink-0">
+        <CardHeader className="flex-row items-center justify-between gap-3 space-y-0 px-4 py-3">
+          <div className="space-y-1">
+            <CardTitle className="text-sm">整体进度</CardTitle>
+            <p className="text-xs text-muted-foreground">当前项目完成情况和任务覆盖率。</p>
+          </div>
+          <Badge variant="secondary" className="shrink-0">
+            {progress.completed}/{progress.total} · {progress.value}%
+          </Badge>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          <Progress
+            value={progress.value}
+            className="[&_[data-slot=progress-indicator]]:bg-[linear-gradient(90deg,#8AA8E8_0%,#E2B36B_30%,#E8C57A_60%,#8CC9A1_100%)]"
           />
-        </div>
-      </section>
+        </CardContent>
+      </Card>
 
       {layoutMode === "board" ? (
-        <section className="flex min-h-0 flex-1 flex-col rounded-lg border border-neutral-200 bg-white p-4">
-          {/* 卡片视图把需求展开成列，方便像看看板一样扫任务。 */}
-          <div className="mb-4 flex items-center justify-between">
+        <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 px-4 pb-0 pt-4">
             <div>
-              <h2 className="text-base font-semibold">卡片视图</h2>
-              <p className="text-xs text-neutral-500">按需求分列展示任务卡片，适合看每个列里的待办。</p>
+              <CardTitle className="text-base">卡片视图</CardTitle>
+              <p className="text-xs text-muted-foreground">按需求分列展示任务卡片，适合看每个列里的待办。</p>
             </div>
             <Button type="button" variant="outline" onClick={() => void handleSaveBatch()}>
               快速编辑
             </Button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            <div className="grid min-w-max gap-4 pb-1 [grid-auto-flow:column] [grid-auto-columns:minmax(320px,320px)]">
-            {filteredRequirements.map((requirement) => {
-              const requirementTasks = filteredTasks.filter((task) => task.requirementId === requirement.id)
-              return (
-                <div key={requirement.id} className="flex min-h-[420px] flex-col rounded-2xl border border-neutral-200 bg-neutral-50/80 p-3">
-                  <div className="mb-3 flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate font-semibold">{requirement.title}</p>
-                      <p className="text-xs text-neutral-500">
-                        {REQUIREMENT_STATUS_TEXT[requirement.status]} · {PRIORITY_TEXT[requirement.priority]} · {requirementTasks.length} 个任务
-                      </p>
-                    </div>
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button type="button" size="icon-sm" variant="outline" onClick={() => openEditRequirement(requirement)}>
-                          <Pencil className="size-3.5" />
-                        </Button>
-                      </DialogTrigger>
-                      <RequirementDialog form={requirementForm} onFormChange={setRequirementForm} onSave={handleSaveRequirement} />
-                    </Dialog>
-                  </div>
-                  <div className="mb-3 rounded-xl border border-dashed border-neutral-300 bg-white p-2 text-xs text-neutral-500">
-                    <div className="flex items-center justify-between">
-                      <span>开始 {project.startedAt || "未设置"}</span>
-                      <span>结束 {project.dueAt || "未设置"}</span>
-                    </div>
-                  </div>
-                  <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
-                    {requirementTasks.length === 0 ? (
-                      <div className="rounded-xl border border-dashed border-neutral-200 bg-white px-3 py-6 text-center text-sm text-neutral-500">
-                        还没有任务，先补一个吧。
-                      </div>
-                    ) : requirementTasks.map((task) => {
-                      const done = task.isCompleted === 1 || task.status === "done"
-                      return (
-                        <div key={task.id} className={done ? "rounded-xl border border-sky-200 bg-sky-50 p-3" : "rounded-xl border border-neutral-200 bg-white p-3"}>
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className={done ? "truncate text-sm font-medium text-sky-800 line-through" : "truncate text-sm font-medium"}>
-                                {task.title}
-                              </p>
-                              <p className="mt-1 text-xs text-neutral-500">
-                                {TASK_STATUS_TEXT[task.status]} · {PRIORITY_TEXT[task.priority]}
-                              </p>
-                            </div>
-                            <TaskStateToggle task={task} onToggle={async (_task, nextDone) => {
-                              await updateTaskStatus({ id: task.id, done: nextDone })
-                              await refreshAll()
-                            }} onStatusChange={async (_task, status) => {
-                              await updateTaskStatus({ id: task.id, status })
-                              await refreshAll()
-                            }} />
-                          </div>
-                          <div className="mt-3 flex items-center justify-between gap-2 text-xs text-neutral-500">
-                            <span>开始 {task.startedAt || "-"}</span>
-                            <span>计划 {task.dueAt || "-"}</span>
+          </CardHeader>
+          <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 pt-4">
+            {/* 卡片视图把需求展开成列，外层滚动，列内再滚动任务，避免把整页撑长。 */}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="grid min-w-max gap-4 pb-1 [grid-auto-flow:column] [grid-auto-columns:minmax(320px,320px)]">
+                {filteredRequirements.map((requirement) => {
+                  const requirementTasks = sortTasksForDisplay(
+                    filteredTasks.filter((task) => task.requirementId === requirement.id),
+                    requirementOrderMap,
+                  )
+                  return (
+                    <Card key={requirement.id} className="flex h-full min-h-[420px] flex-col overflow-hidden border-border/70 bg-muted/30 p-3 shadow-sm">
+                      <div className="mb-3 flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold">{requirement.title}</p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            <Badge variant="outline" className={cn("border", getStatusToneClassName(requirement.status))}>
+                              {REQUIREMENT_STATUS_TEXT[requirement.status]}
+                            </Badge>
+                            <Badge variant="outline" className={cn("border", getPriorityToneClassName(requirement.priority))}>
+                              {PRIORITY_TEXT[requirement.priority]}
+                            </Badge>
+                            <Badge variant="muted">{requirementTasks.length} 个任务</Badge>
                           </div>
                         </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              )
-            })}
+                        <Dialog>
+                          <DialogTrigger asChild>
+                            <Button type="button" size="icon-sm" variant="outline" onClick={() => openEditRequirement(requirement)}>
+                              <Pencil className="size-3.5" />
+                            </Button>
+                          </DialogTrigger>
+                          <RequirementDialog form={requirementForm} onFormChange={setRequirementForm} onSave={handleSaveRequirement} />
+                        </Dialog>
+                      </div>
+                      <div className="mb-3 rounded-xl border border-dashed border-border bg-background p-2 text-xs text-muted-foreground">
+                        <div className="flex items-center justify-between">
+                          <span>开始 {project.startedAt || "未设置"}</span>
+                          <span>结束 {project.dueAt || "未设置"}</span>
+                        </div>
+                      </div>
+                      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                        {requirementTasks.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-border bg-background px-3 py-6 text-center text-sm text-muted-foreground">
+                            还没有任务，先补一个吧。
+                          </div>
+                        ) : requirementTasks.map((task) => {
+                          const done = task.isCompleted === 1 || task.status === "done"
+                          return (
+                            <Card key={task.id} className={done ? "border-emerald-200 bg-emerald-50/70 p-3 shadow-none" : "border-border/70 bg-background/80 p-3 shadow-none"}>
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className={done ? "truncate text-sm font-medium text-muted-foreground line-through" : "truncate text-sm font-medium"}>
+                                    {task.title}
+                                  </p>
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    <Badge variant="outline" className={cn("border", getStatusToneClassName(task.status))}>
+                                      {TASK_STATUS_TEXT[task.status]}
+                                    </Badge>
+                                    <Badge variant="outline" className={cn("border", getPriorityToneClassName(task.priority))}>
+                                      {PRIORITY_TEXT[task.priority]}
+                                    </Badge>
+                                  </div>
+                                </div>
+                                <TaskStateToggle task={task} onToggle={async (_task, nextDone) => {
+                                  await updateTaskStatus({ id: task.id, done: nextDone })
+                                  await refreshAll()
+                                }} onStatusChange={async (_task, status) => {
+                                  await updateTaskStatus({ id: task.id, status })
+                                  await refreshAll()
+                                }} />
+                              </div>
+                              <div className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                <span>开始 {task.startedAt || "-"}</span>
+                                <span>计划 {task.dueAt || "-"}</span>
+                              </div>
+                            </Card>
+                          )
+                        })}
+                      </div>
+                    </Card>
+                  )
+                })}
+              </div>
             </div>
-          </div>
-        </section>
+          </CardContent>
+        </Card>
       ) : null}
       {layoutMode === "gantt" ? (
-        <section className="flex min-h-0 flex-1 flex-col rounded-lg border border-neutral-200 bg-white p-4">
+        <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <CardHeader className="px-4 pb-0 pt-4">
           {/* 甘特视图强调时间线，方便快速看每个需求/任务的周期。 */}
-          <div className="mb-4">
-            <h2 className="text-base font-semibold">甘特视图</h2>
-            <p className="text-xs text-neutral-500">根据任务开始和计划结束日期生成时间条，适合看项目周期。</p>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            <SimpleGantt project={project} requirements={filteredRequirements} tasks={filteredTasks} />
-          </div>
-        </section>
+            <CardTitle className="text-base">甘特视图</CardTitle>
+            <p className="text-xs text-muted-foreground">根据任务开始和计划结束日期生成时间条，适合看项目周期。</p>
+          </CardHeader>
+          <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 pt-4">
+            {/* 甘特视图也放进固定滚动区，避免长列表把整页撑开。 */}
+            <div className="min-h-0 flex-1 overflow-auto">
+              <SimpleGantt project={project} requirements={filteredRequirements} tasks={filteredTasks} />
+            </div>
+          </CardContent>
+        </Card>
       ) : null}
       <div className={layoutMode === "list" ? "min-h-0 flex-1 overflow-y-auto pr-1" : "hidden"}>
         <section
           ref={lineHostRef}
-          className="relative grid gap-6 xl:grid-cols-[minmax(260px,0.9fr)_minmax(60px,80px)_minmax(360px,1.4fr)]"
+          className="relative grid gap-4 overflow-hidden xl:grid-cols-[minmax(260px,0.9fr)_minmax(60px,80px)_minmax(360px,1.4fr)]"
           style={{ height: `${boardHeight}px` }}
         >
           <svg className="pointer-events-none absolute inset-0 z-0 hidden h-full w-full xl:block">
@@ -849,7 +936,8 @@ export default function ProjectDetailPage() {
               />
             ))}
           </svg>
-          <div className="flex min-h-0 flex-col rounded-lg border border-neutral-200 bg-white p-4">
+          <Card className="flex min-h-0 flex-col overflow-hidden">
+            <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-4">
             <PanelTitle title="需求" buttonText="新建需求" onCreate={openCreateRequirement}>
               <RequirementDialog form={requirementForm} onFormChange={setRequirementForm} onSave={handleSaveRequirement} />
             </PanelTitle>
@@ -876,11 +964,13 @@ export default function ProjectDetailPage() {
                 onSave={handleSaveRequirement}
               />
             </div>
-          </div>
+            </CardContent>
+          </Card>
 
           <div className="hidden xl:block" />
 
-          <div className="flex min-h-0 flex-col rounded-lg border border-neutral-200 bg-white p-4">
+          <Card className="flex min-h-0 flex-col overflow-hidden">
+            <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-4">
             <PanelTitle title="任务" buttonText="新建任务" onCreate={openCreateTask}>
               <TaskDialog
                 form={taskForm}
@@ -916,11 +1006,12 @@ export default function ProjectDetailPage() {
                 onSave={handleSaveTask}
               />
             </div>
-          </div>
+            </CardContent>
+          </Card>
         </section>
 
-        <section className="mt-3 rounded-lg border border-neutral-200 bg-white p-4">
-          <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <Card className="mt-3">
+          <CardHeader className="flex-row items-center justify-between gap-3 space-y-0 px-4 pt-4">
             <div className="flex items-center gap-2 text-sm font-medium">
               <LinkIcon className="size-4" />
               关联笔记
@@ -936,7 +1027,7 @@ export default function ProjectDetailPage() {
                   <DialogTitle>选择关联笔记</DialogTitle>
                   <DialogDescription>按目录结构勾选一个或多个文件，确认后再写入项目关联。</DialogDescription>
                 </DialogHeader>
-                <div className="max-h-[360px] overflow-y-auto rounded-md border border-neutral-200 p-2">
+                <div className="max-h-[360px] overflow-y-auto rounded-md border border-border p-2">
                   <NotePickerTree
                     rows={availableNoteTree}
                     selectedIds={selectedNoteIds}
@@ -957,13 +1048,14 @@ export default function ProjectDetailPage() {
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-          </div>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 pt-0">
           {linkedNotes.length === 0 ? (
-            <p className="text-sm text-neutral-500">暂无关联笔记。</p>
+            <p className="text-sm text-muted-foreground">暂无关联笔记。</p>
           ) : (
             <div className="space-y-2">
               {linkedNotes.map((note) => (
-                <div key={note.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                <div key={note.id} className="flex items-center justify-between rounded-lg border bg-background px-3 py-2.5 text-sm">
                   <div className="min-w-0">
                     <button
                       type="button"
@@ -972,7 +1064,7 @@ export default function ProjectDetailPage() {
                     >
                       {note.title}
                     </button>
-                    <span className="block truncate text-xs text-neutral-500">{note.filePath}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{note.filePath}</span>
                   </div>
                   <Button type="button" size="sm" variant="outline" onClick={() => void handleUnlinkNote(note.id)}>
                     取消关联
@@ -981,7 +1073,8 @@ export default function ProjectDetailPage() {
               ))}
             </div>
           )}
-        </section>
+          </CardContent>
+        </Card>
       </div>
     </main>
   )
@@ -997,15 +1090,14 @@ function moveRowToTarget<T extends { id: string }>(rows: T[], sourceId: string, 
   return nextRows
 }
 
-function sortTasksForDisplay(rows: TaskRecord[]) {
+function sortTasksForDisplay(rows: TaskRecord[], requirementOrderMap: Map<string, number> = new Map()) {
+  // 任务先按需求位置，再按进行中和紧急程度排序，最后沿用原始顺序兜底。
   return [...rows].sort((a, b) => {
-    const aDone = a.isCompleted === 1 || a.status === "done"
-    const bDone = b.isCompleted === 1 || b.status === "done"
-    if (aDone !== bDone) return aDone ? 1 : -1
-    if (aDone && bDone) {
-      return String(b.completedAt || b.updatedAt).localeCompare(String(a.completedAt || a.updatedAt))
-    }
-    return a.sortOrder - b.sortOrder
+    const aRequirementOrder = a.requirementId ? requirementOrderMap.get(a.requirementId) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER
+    const bRequirementOrder = b.requirementId ? requirementOrderMap.get(b.requirementId) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER
+    if (aRequirementOrder !== bRequirementOrder) return aRequirementOrder - bRequirementOrder
+
+    return compareByStatusThenPriority(a, b)
   })
 }
 
@@ -1014,29 +1106,19 @@ function sortRequirementsForDisplay(
   doneMap: Map<string, boolean>,
   tasks: TaskRecord[],
 ) {
+  // 需求优先按进行中和紧急程度排序，再把已完成的需求放后面。
   return [...rows].sort((a, b) => {
     const aDone = doneMap.get(a.id) === true
     const bDone = doneMap.get(b.id) === true
     if (aDone !== bDone) return aDone ? 1 : -1
-    if (aDone && bDone) {
-      return getLatestRequirementDoneAt(b.id, tasks).localeCompare(getLatestRequirementDoneAt(a.id, tasks))
-    }
-    return a.sortOrder - b.sortOrder
+    return compareByStatusThenPriority(a, b)
   })
 }
 
-function getLatestRequirementDoneAt(requirementId: string, tasks: TaskRecord[]) {
-  return tasks
-    .filter((task) => task.requirementId === requirementId && (task.isCompleted === 1 || task.status === "done"))
-    .map((task) => task.completedAt || task.updatedAt || "")
-    .sort()
-    .at(-1) || ""
-}
-
 function getTaskRowClassName(task: TaskRecord) {
-  if (task.status === "cancelled") return "bg-rose-50/80"
-  if (task.status === "doing") return "bg-emerald-50/80"
-  if (task.status === "done" || task.isCompleted === 1) return "bg-sky-50/80"
+  if (task.status === "cancelled") return "bg-muted/60"
+  if (task.status === "doing") return "bg-slate-50/80"
+  if (task.status === "done" || task.isCompleted === 1) return "bg-emerald-50/70"
   return ""
 }
 
@@ -1053,7 +1135,7 @@ function TaskStateToggle(props: {
       <button
         type="button"
         aria-label="取消状态"
-        className="flex size-4 items-center justify-center rounded-[4px] border border-rose-300 bg-rose-50 text-rose-600"
+        className="flex size-4 items-center justify-center rounded-[4px] border border-border bg-muted text-muted-foreground"
         onClick={() => void (props.onStatusChange ? props.onStatusChange(props.task, "todo") : props.onToggle(props.task, false))}
       >
         <X className="size-3" />
@@ -1067,7 +1149,7 @@ function TaskStateToggle(props: {
       aria-label={done ? "取消完成" : "完成任务"}
       onClick={() => void props.onToggle(props.task, !done)}
       className={done
-        ? "flex size-4 items-center justify-center rounded-[4px] border border-sky-400 bg-sky-500 text-white"
+        ? "flex size-4 items-center justify-center rounded-[4px] border border-sky-300 bg-sky-100 text-sky-700"
         : "size-4 rounded-[4px] border border-input bg-background"
       }
     >
@@ -1167,7 +1249,7 @@ function NotePickerTree(props: {
   const depth = props.depth ?? 0
 
   if (props.rows.length === 0 && depth === 0) {
-    return <p className="px-2 py-3 text-sm text-neutral-500">暂无可关联的笔记文件。</p>
+    return <p className="px-2 py-3 text-sm text-muted-foreground">暂无可关联的笔记文件。</p>
   }
 
   return (
@@ -1177,7 +1259,7 @@ function NotePickerTree(props: {
         return (
           <div key={row.id}>
             <div
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-neutral-50"
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent/50"
               style={{ paddingLeft: `${8 + depth * 16}px` }}
             >
               {isFile ? (
@@ -1189,7 +1271,7 @@ function NotePickerTree(props: {
               ) : (
                 <span className="size-4 rounded border border-transparent" />
               )}
-              <span title={row.title} className={isFile ? "truncate" : "truncate font-medium text-neutral-700"}>
+              <span title={row.title} className={isFile ? "truncate" : "truncate font-medium text-foreground/80"}>
                 {isFile ? "[文件]" : "[目录]"} {row.title}
               </span>
             </div>
@@ -1281,63 +1363,82 @@ function RequirementList(props: {
   onSave: () => Promise<void>
 }) {
   return (
-    <div>
+    <div className="space-y-2">
       {props.rows.map((row) => {
         const done = props.doneMap.get(row.id) === true
         return (
-        <div
-          key={row.id}
-          ref={(node) => {
-            props.nodeRefs.current[row.id] = node
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={() => void props.onDrop(row.id)}
-          className={done
-            ? "flex items-center gap-3 border-t bg-sky-50/80 px-2 py-3 text-sm first:border-t-0"
-            : "flex items-center gap-3 border-t px-2 py-3 text-sm first:border-t-0"
-          }
-        >
-          <button
-            type="button"
-            aria-label={`高亮需求 ${row.title} 的连线`}
-            onClick={() => props.onFlash(row.id)}
-            className="size-3 rounded-full ring-offset-2 transition hover:ring-2 hover:ring-neutral-300"
-            style={{ backgroundColor: done ? "#38bdf8" : row.color || "#6b7280" }}
-          />
-          <div className="min-w-0 flex-1">
-            <p title={row.title} className={done ? "truncate font-medium text-sky-700" : "truncate font-medium"}>{row.title}</p>
-            <p className="text-xs text-neutral-500">{done ? "任务已完成" : REQUIREMENT_STATUS_TEXT[row.status]} · {PRIORITY_TEXT[row.priority]}</p>
-          </div>
-          <Dialog>
-            <DialogTrigger asChild>
-              <Button type="button" size="icon-sm" variant="outline" onClick={() => props.onEdit(row)}>
-                <Pencil className="size-3.5" />
-              </Button>
-            </DialogTrigger>
-            <RequirementDialog form={props.dialogForm} onFormChange={props.onFormChange} onSave={props.onSave} />
-          </Dialog>
-          <ConfirmDeleteButton
-            title="确认删除需求？"
-            description="删除需求会同时删除它下面的任务。该操作会软删除数据，不会影响 Notes 文件。"
-            onConfirm={() => props.onDelete(row.id)}
-          />
-          <button
-            type="button"
-            draggable
-            aria-label={`拖动需求 ${row.title}`}
-            onDragStart={() => props.onDragStart(row.id)}
-            onDragEnd={() => props.onDragStart(null)}
-            className={props.draggedId === row.id
-              ? "cursor-grabbing rounded-md border border-neutral-300 bg-neutral-100 p-1.5"
-              : "cursor-grab rounded-md border border-neutral-200 p-1.5 hover:bg-neutral-50"
-            }
+          <Card
+            key={row.id}
+            ref={(node) => {
+              props.nodeRefs.current[row.id] = node
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={() => void props.onDrop(row.id)}
+            className={cn(
+              "p-0 transition-colors",
+              done ? "border-emerald-200 bg-emerald-50/70" : "bg-background"
+            )}
           >
-            <GripVertical className="size-4 text-neutral-500" />
-          </button>
-        </div>
+            <div className="flex items-center gap-3 px-3 py-3 text-sm">
+              <button
+                type="button"
+                aria-label={`高亮需求 ${row.title} 的连线`}
+                onClick={() => props.onFlash(row.id)}
+                className="size-3 rounded-full ring-offset-2 transition hover:ring-2 hover:ring-ring/30"
+                style={{ backgroundColor: done ? "#8CC9A1" : row.color || "#8AA8E8" }}
+              />
+              <div className="min-w-0 flex-1">
+                <p title={row.title} className={done ? "truncate font-medium text-muted-foreground line-through" : "truncate font-medium"}>
+                  {row.title}
+                </p>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  <Badge variant="outline" className={cn("border", getStatusToneClassName(row.status))}>
+                    {done ? "已完成" : REQUIREMENT_STATUS_TEXT[row.status]}
+                  </Badge>
+                  <Badge variant="outline" className={cn("border", getPriorityToneClassName(row.priority))}>
+                    {PRIORITY_TEXT[row.priority]}
+                  </Badge>
+                </div>
+              </div>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button type="button" size="icon-sm" variant="outline" onClick={() => props.onEdit(row)}>
+                    <Pencil className="size-3.5" />
+                  </Button>
+                </DialogTrigger>
+                <RequirementDialog form={props.dialogForm} onFormChange={props.onFormChange} onSave={props.onSave} />
+              </Dialog>
+              <ConfirmDeleteButton
+                title="确认删除需求？"
+                description="删除需求会同时删除它下面的任务。该操作会软删除数据，不会影响 Notes 文件。"
+                onConfirm={() => props.onDelete(row.id)}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                draggable
+                aria-label={`拖动需求 ${row.title}`}
+                onDragStart={() => props.onDragStart(row.id)}
+                onDragEnd={() => props.onDragStart(null)}
+                className={cn(
+                  "shrink-0 border border-border text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  props.draggedId === row.id && "cursor-grabbing bg-muted"
+                )}
+              >
+                <GripVertical className="size-4" />
+              </Button>
+            </div>
+          </Card>
         )
       })}
-      {props.rows.length === 0 ? <p className="pt-4 text-sm text-neutral-500">暂无需求。</p> : null}
+      {props.rows.length === 0 ? (
+        <Card className="border-dashed bg-background">
+          <CardContent className="px-3 py-6 text-center text-sm text-muted-foreground">
+            暂无需求。
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   )
 }
@@ -1380,65 +1481,86 @@ function TaskList(props: {
   onSave: () => Promise<void>
 }) {
   return (
-    <div>
+    <div className="space-y-2">
       {props.rows.map((row) => {
         const done = row.isCompleted === 1 || row.status === "done"
         return (
-          <div
+          <Card
             key={row.id}
             ref={(node) => {
               props.nodeRefs.current[row.id] = node
             }}
             onDragOver={(event) => event.preventDefault()}
             onDrop={() => void props.onDrop(row.id)}
-            className={`flex items-center gap-3 border-t px-2 py-3 text-sm first:border-t-0 ${getTaskRowClassName(row)}`}
+            className={cn(
+              "p-0 transition-colors",
+              getTaskRowClassName(row) || "bg-background"
+            )}
           >
-            <TaskStateToggle task={row} onToggle={props.onToggle} />
-            <button
-              type="button"
-              aria-label={`高亮任务 ${row.title} 的连线`}
-              onClick={() => props.onFlash(row)}
-              className="size-3 rounded-full ring-offset-2 transition hover:ring-2 hover:ring-neutral-300"
-              style={{ backgroundColor: row.color || "#6b7280" }}
-            />
-            <div className="min-w-0 flex-1">
-              <p title={row.title} className={done ? "truncate font-medium text-neutral-400 line-through" : "truncate font-medium"}>
-                {row.title}
-              </p>
-              <p className="text-xs text-neutral-500">
-                {TASK_STATUS_TEXT[row.status]} · {PRIORITY_TEXT[row.priority]} · {row.requirementTitle || "无需求"}
-              </p>
+            <div className="flex items-center gap-3 px-3 py-3 text-sm">
+              <TaskStateToggle task={row} onToggle={props.onToggle} />
+              <button
+                type="button"
+                aria-label={`高亮任务 ${row.title} 的连线`}
+                onClick={() => props.onFlash(row)}
+                className="size-3 rounded-full ring-offset-2 transition hover:ring-2 hover:ring-ring/30"
+                style={{ backgroundColor: row.color || "#8AA8E8" }}
+              />
+              <div className="min-w-0 flex-1">
+                <p title={row.title} className={done ? "truncate font-medium text-muted-foreground line-through" : "truncate font-medium"}>
+                  {row.title}
+                </p>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  <Badge variant="outline" className={cn("border", getStatusToneClassName(row.status))}>
+                    {TASK_STATUS_TEXT[row.status]}
+                  </Badge>
+                  <Badge variant="outline" className={cn("border", getPriorityToneClassName(row.priority))}>
+                    {PRIORITY_TEXT[row.priority]}
+                  </Badge>
+                  <Badge variant="outline" className="border-border bg-background text-muted-foreground">
+                    {row.requirementTitle || "无需求"}
+                  </Badge>
+                </div>
+              </div>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button type="button" size="icon-sm" variant="outline" onClick={() => props.onEdit(row)}>
+                    <Pencil className="size-3.5" />
+                  </Button>
+                </DialogTrigger>
+                <TaskDialog form={props.dialogForm} requirements={props.requirements} onFormChange={props.onFormChange} onSave={props.onSave} />
+              </Dialog>
+              <ConfirmDeleteButton
+                title="确认删除任务？"
+                description="删除任务会将该任务从项目和全局 Tasks 视图中隐藏。该操作会软删除数据。"
+                onConfirm={() => props.onDelete(row.id)}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                draggable
+                aria-label={`拖动任务 ${row.title}`}
+                onDragStart={() => props.onDragStart(row.id)}
+                onDragEnd={() => props.onDragStart(null)}
+                className={cn(
+                  "shrink-0 border border-border text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  props.draggedId === row.id && "cursor-grabbing bg-muted"
+                )}
+              >
+                <GripVertical className="size-4" />
+              </Button>
             </div>
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button type="button" size="icon-sm" variant="outline" onClick={() => props.onEdit(row)}>
-                  <Pencil className="size-3.5" />
-                </Button>
-              </DialogTrigger>
-              <TaskDialog form={props.dialogForm} requirements={props.requirements} onFormChange={props.onFormChange} onSave={props.onSave} />
-            </Dialog>
-            <ConfirmDeleteButton
-              title="确认删除任务？"
-              description="删除任务会将该任务从项目和全局 Tasks 视图中隐藏。该操作会软删除数据。"
-              onConfirm={() => props.onDelete(row.id)}
-            />
-            <button
-              type="button"
-              draggable
-              aria-label={`拖动任务 ${row.title}`}
-              onDragStart={() => props.onDragStart(row.id)}
-              onDragEnd={() => props.onDragStart(null)}
-              className={props.draggedId === row.id
-                ? "cursor-grabbing rounded-md border border-neutral-300 bg-neutral-100 p-1.5"
-                : "cursor-grab rounded-md border border-neutral-200 p-1.5 hover:bg-neutral-50"
-              }
-            >
-              <GripVertical className="size-4 text-neutral-500" />
-            </button>
-          </div>
+          </Card>
         )
       })}
-      {props.rows.length === 0 ? <p className="pt-4 text-sm text-neutral-500">暂无任务。</p> : null}
+      {props.rows.length === 0 ? (
+        <Card className="border-dashed bg-background">
+          <CardContent className="px-3 py-6 text-center text-sm text-muted-foreground">
+            暂无任务。
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   )
 }
@@ -1543,16 +1665,24 @@ function TaskDialog(props: {
       <EntityForm form={props.form} statusText={TASK_STATUS_TEXT} onFormChange={props.onFormChange} />
       <div className="space-y-2">
         <Label>所属需求</Label>
-        <select
-          value={props.form.requirementId}
-          onChange={(event) => props.onFormChange({ ...props.form, requirementId: event.target.value })}
-          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+        <Select
+          value={props.form.requirementId || ALL_FILTER_VALUE}
+          onValueChange={(value) =>
+            props.onFormChange({ ...props.form, requirementId: value === ALL_FILTER_VALUE ? "" : value })
+          }
         >
-          <option value="">无需求</option>
-          {props.requirements.map((requirement) => (
-            <option key={requirement.id} value={requirement.id}>{requirement.title}</option>
-          ))}
-        </select>
+          <SelectTrigger>
+            <SelectValue placeholder="无需求" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_FILTER_VALUE}>无需求</SelectItem>
+            {props.requirements.map((requirement) => (
+              <SelectItem key={requirement.id} value={requirement.id}>
+                {requirement.title}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <div className="grid gap-3 md:grid-cols-3">
         <DatePickerField
@@ -1591,7 +1721,7 @@ function SimpleGantt(props: {
   const rows = props.requirements.map((requirement) => ({
     id: requirement.id,
     title: requirement.title,
-    color: requirement.color || "#6b7280",
+    color: requirement.color || "#8AA8E8",
     items: props.tasks.filter((task) => task.requirementId === requirement.id),
   }))
 
@@ -1612,27 +1742,30 @@ function SimpleGantt(props: {
       <div className="overflow-x-auto">
         <div className="min-w-[760px] space-y-3">
           <div className="grid" style={{ gridTemplateColumns: `220px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
-            <div className="px-2 py-2 text-xs font-medium text-neutral-500">需求 / 任务</div>
+            <div className="px-2 py-2 text-xs font-medium text-muted-foreground">需求 / 任务</div>
             {dayColumns.map((day) => (
-              <div key={day.toISOString()} className="px-1 py-2 text-center text-[11px] text-neutral-500">
+              <div key={day.toISOString()} className="px-1 py-2 text-center text-[11px] text-muted-foreground">
                 {formatTimelineDay(day)}
               </div>
             ))}
           </div>
 
           {rows.map((row) => {
-            const rowEntries = row.items.length > 0 ? row.items : [{ id: `${row.id}:empty`, title: "暂无任务", startedAt: null, dueAt: null, completedAt: null, status: "todo", priority: "normal", isCompleted: 0 as 0 | 1 }]
+            const rowEntries =
+              row.items.length > 0
+                ? sortTasksForDisplay(row.items as TaskRecord[])
+                : [{ id: `${row.id}:empty`, title: "暂无任务", startedAt: null, dueAt: null, completedAt: null, status: "todo", priority: "normal", isCompleted: 0 as 0 | 1 }]
             return (
-              <div key={row.id} className="rounded-2xl border border-neutral-200 bg-neutral-50/70 p-2">
+                <div key={row.id} className="rounded-xl border border-border/70 bg-muted/20 p-2.5 shadow-sm">
                 <div className="mb-2 flex items-center justify-between px-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{row.title}</p>
-                    <p className="text-xs text-neutral-500">{row.items.length} 个任务</p>
+                    <p className="text-xs text-muted-foreground">{row.items.length} 个任务</p>
                   </div>
                   <span className="size-3 rounded-full" style={{ backgroundColor: row.color }} />
                 </div>
                 <div className="space-y-2">
-          {rowEntries.map((task) => {
+                  {rowEntries.map((task) => {
                     const ganttTask = task as Pick<TaskRecord, "id" | "title" | "startedAt" | "dueAt" | "completedAt" | "status" | "priority" | "isCompleted">
                     const start = parseDate(ganttTask.startedAt || props.project.startedAt || startDate.toISOString())
                     const end = parseDate(ganttTask.dueAt || ganttTask.completedAt || ganttTask.startedAt || props.project.dueAt || props.project.completedAt || endDate.toISOString())
@@ -1641,24 +1774,36 @@ function SimpleGantt(props: {
                     const startIndex = Math.max(0, Math.floor((safeStart.getTime() - startDate.getTime()) / DAY_MS))
                     const span = Math.max(1, Math.floor((safeEnd.getTime() - safeStart.getTime()) / DAY_MS) + 1)
                     const done = ganttTask.isCompleted === 1 || ganttTask.status === "done"
+                    const progressWidth = done ? 100 : Math.max(15, Math.min(100, Math.round((span / dayColumns.length) * 100)))
                     return (
-                      <div key={ganttTask.id} className="grid items-center gap-2" style={{ gridTemplateColumns: `220px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
-                        <div className="min-w-0 px-2 py-1">
-                          <p className={done ? "truncate text-sm text-neutral-400 line-through" : "truncate text-sm font-medium"}>{ganttTask.title}</p>
-                          <p className="text-[11px] text-neutral-500">
-                            {done ? "已完成" : TASK_STATUS_TEXT[ganttTask.status]} · {ganttTask.startedAt || "未开始"} → {ganttTask.dueAt || ganttTask.completedAt || "未结束"}
-                          </p>
-                        </div>
-                        <div className="relative col-span-full grid" style={{ gridTemplateColumns: `220px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
-                          <div
-                            className="col-start-2 row-start-1 my-2 h-7 rounded-xl px-2 py-1 text-xs text-white shadow-sm"
-                            style={{
-                              gridColumn: `${startIndex + 2} / span ${Math.min(span, dayColumns.length - startIndex)}`,
-                              backgroundColor: done ? "#0f172a" : row.color,
-                            }}
-                          >
-                            <span className="block truncate">{done ? "完成" : PRIORITY_TEXT[ganttTask.priority]}</span>
+                      <div key={ganttTask.id} className="rounded-lg border border-border/70 bg-background/80 p-3 shadow-none">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className={done ? "truncate text-sm font-medium text-muted-foreground line-through" : "truncate text-sm font-medium"}>{ganttTask.title}</p>
+                            <div className="mt-1 flex flex-wrap gap-1 text-[11px]">
+                              <Badge variant="outline" className={cn("border", getStatusToneClassName(ganttTask.status))}>
+                                {done ? "已完成" : TASK_STATUS_TEXT[ganttTask.status]}
+                              </Badge>
+                              <Badge variant="outline" className={cn("border", getPriorityToneClassName(ganttTask.priority))}>
+                                {PRIORITY_TEXT[ganttTask.priority]}
+                              </Badge>
+                            </div>
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                              {ganttTask.startedAt || "未开始"} → {ganttTask.dueAt || ganttTask.completedAt || "未结束"}
+                            </p>
                           </div>
+                          <span className="shrink-0 rounded-full border border-border/70 bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+                            {done ? "已完成" : `${Math.max(1, span)} 天`}
+                          </span>
+                        </div>
+                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${progressWidth}%`,
+                              backgroundColor: done ? "#8CC9A1" : row.color,
+                            }}
+                          />
                         </div>
                       </div>
                     )
@@ -1699,27 +1844,39 @@ function EntityForm<TStatus extends string, TForm extends EntityFormState<TStatu
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-2">
           <Label>状态</Label>
-          <select
+          <Select
             value={props.form.status}
-            onChange={(event) => props.onFormChange({ ...props.form, status: event.target.value as TStatus })}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            onValueChange={(value) => props.onFormChange({ ...props.form, status: value as TStatus })}
           >
-            {Object.entries(props.statusText).map(([value, label]) => (
-              <option key={value} value={value}>{label as string}</option>
-            ))}
-          </select>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(props.statusText).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label as string}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="space-y-2">
           <Label>优先级</Label>
-          <select
+          <Select
             value={props.form.priority}
-            onChange={(event) => props.onFormChange({ ...props.form, priority: event.target.value as Priority })}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            onValueChange={(value) => props.onFormChange({ ...props.form, priority: value as Priority })}
           >
-            {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       <div className="space-y-2">
@@ -1731,7 +1888,7 @@ function EntityForm<TStatus extends string, TForm extends EntityFormState<TStatu
               type="button"
               aria-label={`选择颜色 ${color}`}
               onClick={() => props.onFormChange({ ...props.form, color })}
-              className={props.form.color === color ? "size-7 rounded-full border-2 border-neutral-900" : "size-7 rounded-full border border-neutral-200"}
+              className={props.form.color === color ? "size-7 rounded-full border-2 border-slate-400" : "size-7 rounded-full border border-border"}
               style={{ backgroundColor: color }}
             />
           ))}

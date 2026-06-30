@@ -181,8 +181,30 @@ CREATE INDEX IF NOT EXISTS idx_tasks_due
 ON tasks(due_at, status, is_deleted);
 
 -- =============================================
--- 7) 笔记关联
+-- 7) 插件与笔记关联
 -- =============================================
+CREATE TABLE IF NOT EXISTS plugins (
+  id TEXT PRIMARY KEY,
+  plugin_key TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  description TEXT,
+  version TEXT NOT NULL DEFAULT '1.0.0',
+  source_path TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'local',
+  ui_mode TEXT NOT NULL DEFAULT 'panel' CHECK (ui_mode IN ('editor', 'display', 'panel')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  is_installed INTEGER NOT NULL DEFAULT 1,
+  order_index INTEGER NOT NULL DEFAULT 0,
+  manifest_json TEXT NOT NULL DEFAULT '{}',
+  permissions_json TEXT NOT NULL DEFAULT '{}',
+  settings_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugins_enabled_order
+ON plugins(is_installed DESC, enabled DESC, order_index ASC, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS note_project_links (
   note_id TEXT NOT NULL,
   project_id TEXT NOT NULL,

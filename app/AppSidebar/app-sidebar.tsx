@@ -61,19 +61,20 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <SidebarMenuButton className="h-10">
-                  <div className="flex items-center gap-2">
+                <SidebarMenuButton className="h-10 justify-between gap-2 px-3">
+                  {/* 顶部工作区切换：左侧品牌块，右侧下拉箭头。 */}
+                  <div className="flex min-w-0 items-center gap-2">
                     <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-xs font-medium text-primary-foreground">
                       A
                     </div>
                     <span className="truncate font-medium">Acme Inc</span>
                   </div>
 
-                  <ChevronDown className="ml-auto h-4 w-4 opacity-50" />
+                  <ChevronDown className="size-4 shrink-0 opacity-50" />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-[--radix-popper-anchor-width]">
-                <DropdownMenuItem>
+              <DropdownMenuContent className="w-[--radix-popper-anchor-width] min-w-56 p-1.5">
+                <DropdownMenuItem className="gap-2 rounded-md px-2.5 py-2">
                   <div className="flex items-center gap-2">
                     <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-xs text-primary-foreground">
                       A
@@ -82,7 +83,7 @@ export function AppSidebar() {
                   </div>
                 </DropdownMenuItem>
 
-                <DropdownMenuItem>
+                <DropdownMenuItem className="gap-2 rounded-md px-2.5 py-2">
                   <div className="flex items-center gap-2">
                     <div className="flex h-6 w-6 items-center justify-center rounded-md bg-muted text-xs">
                       B
@@ -93,7 +94,7 @@ export function AppSidebar() {
 
                 <DropdownMenuSeparator />
 
-                <DropdownMenuItem className="text-muted-foreground">
+                <DropdownMenuItem className="rounded-md px-2.5 py-2 text-muted-foreground">
                   + Create Team
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -105,7 +106,7 @@ export function AppSidebar() {
       <SidebarContent>
         <div className="px-2 py-2">
           <Tabs defaultValue="workspace" className="w-full">
-            <TabsList className="w-full">
+            <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="workspace" className="flex-1">
                 Workspace
               </TabsTrigger>

@@ -19,6 +19,8 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Card } from "@/components/ui/card"
 import { DatePickerField } from "@/components/date-picker-field"
 import {
   Dialog,
@@ -32,6 +34,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   createProject,
   deleteProject,
@@ -42,24 +45,24 @@ import {
   type ProjectRecord,
   type ProjectStatus,
 } from "@/lib/hora-db"
+import {
+  saveProjectsDetailSnapshot,
+  saveProjectsListSnapshot,
+} from "@/lib/projects-navigation-state"
+import {
+  getPriorityToneClassName,
+  getStatusToneClassName,
+  PRIORITY_LABEL,
+  PROJECT_STATUS_LABEL,
+} from "@/lib/project-style"
 
-const STATUS_TEXT: Record<ProjectStatus, string> = {
-  active: "进行中",
-  paused: "暂停",
-  done: "完成",
-  archived: "归档",
-}
+const STATUS_TEXT = PROJECT_STATUS_LABEL
+const PRIORITY_TEXT = PRIORITY_LABEL
 
-const PRIORITY_TEXT: Record<Priority, string> = {
-  low: "低",
-  normal: "普通",
-  high: "高",
-  urgent: "紧急",
-}
-
-const COLOR_OPTIONS = ["#6b7280", "#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#9333ea"]
-const LAST_PROJECT_STORAGE_KEY = "hora_last_project_id"
+// 项目色板偏低饱和，避免列表页和详情页的视觉对比过强。
+const COLOR_OPTIONS = ["#8AA8E8", "#8CC9A1", "#E2B36B", "#E8C57A", "#E28A8A", "#A8B3C7"]
 const PROJECTS_VIEW_STORAGE_KEY = "hora_projects_view_mode"
+const PROJECTS_LIST_HREF = "/projects?list=1"
 
 type ProjectsViewMode = "list" | "cards" | "gantt"
 
@@ -88,20 +91,22 @@ export default function ProjectsPage() {
   }
 
   useEffect(() => {
+    const currentSearchParams = new URLSearchParams(window.location.search)
+    if (currentSearchParams.get("list") !== "1") {
+      // 项目一级统一使用带 list=1 的规范地址，避免 /projects 和 /projects?list=1 状态分裂。
+      router.replace(PROJECTS_LIST_HREF)
+      return
+    }
+
     const run = async () => {
       try {
         setLoading(true)
         setError(null)
-        const shouldShowList = new URLSearchParams(window.location.search).get("list") === "1"
-        const lastProjectId = window.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)
         const savedViewMode = window.localStorage.getItem(PROJECTS_VIEW_STORAGE_KEY)
         if (savedViewMode === "list" || savedViewMode === "cards" || savedViewMode === "gantt") {
           setViewMode(savedViewMode)
         }
-        if (!shouldShowList && lastProjectId) {
-          router.replace(`/projects/${lastProjectId}`)
-          return
-        }
+        saveProjectsListSnapshot()
         await refreshProjects()
       } catch (err) {
         setError(err instanceof Error ? err.message : "加载项目失败")
@@ -116,6 +121,18 @@ export default function ProjectsPage() {
   useEffect(() => {
     window.localStorage.setItem(PROJECTS_VIEW_STORAGE_KEY, viewMode)
   }, [viewMode])
+
+  useEffect(() => {
+    // 监听项目/任务侧的写入广播，首页列表也跟着刷新，不会停留在旧数据上。
+    const refreshFromBroadcast = () => {
+      void refreshProjects()
+    }
+
+    window.addEventListener("hora:db-updated", refreshFromBroadcast)
+    return () => {
+      window.removeEventListener("hora:db-updated", refreshFromBroadcast)
+    }
+  }, [])
 
   // 排序后的列表：DB 已排序，这里保留 memo 方便后续扩展筛选。
   const sortedProjects = useMemo(() => projects, [projects])
@@ -220,22 +237,22 @@ export default function ProjectsPage() {
             <h1 className="text-2xl font-semibold tracking-tight">我的项目</h1>
             {/* 视图切换只改变展示方式，不影响项目数据本身。 */}
             <div className="flex items-center gap-2">
-              <Label className="text-xs text-neutral-500" htmlFor="projects-view-mode">
+              <Label className="text-xs text-muted-foreground" htmlFor="projects-view-mode">
                 视图
               </Label>
-              <select
-                id="projects-view-mode"
-                value={viewMode}
-                onChange={(event) => setViewMode(event.target.value as ProjectsViewMode)}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="list">列表</option>
-                <option value="cards">卡片</option>
-                <option value="gantt">甘特</option>
-              </select>
+              <Select value={viewMode} onValueChange={(value) => setViewMode(value as ProjectsViewMode)}>
+                <SelectTrigger id="projects-view-mode" className="w-32">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="list">列表</SelectItem>
+                  <SelectItem value="cards">卡片</SelectItem>
+                  <SelectItem value="gantt">甘特</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
-          <p className="mt-1 text-xs text-neutral-500">Project 是需求和任务的项目容器。</p>
+          <p className="mt-1 text-xs text-muted-foreground">Project 是需求和任务的项目容器。</p>
         </div>
 
         <Dialog>
@@ -257,8 +274,8 @@ export default function ProjectsPage() {
       {error ? <p className="mb-4 text-sm text-rose-600">{error}</p> : null}
 
       {viewMode === "list" ? (
-        <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
-          <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.6fr_0.5fr_1fr_0.9fr] border-b bg-neutral-50 px-4 py-2 text-xs font-medium text-neutral-500">
+        <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
+          <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.6fr_0.5fr_1fr_0.9fr] border-b bg-muted/50 px-4 py-2 text-xs font-medium text-muted-foreground">
             <span>项目名称</span>
             <span>状态</span>
             <span>优先级</span>
@@ -273,19 +290,27 @@ export default function ProjectsPage() {
               key={project.id}
               className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.6fr_0.5fr_1fr_0.9fr] items-center border-b px-4 py-3 text-sm last:border-b-0"
             >
-              <Link href={getProjectHref(project.id, viewMode)} className="min-w-0 font-medium text-neutral-900 hover:underline">
+              <Link
+                href={getProjectHref(project.id, viewMode)}
+                className="min-w-0 font-medium text-foreground hover:underline"
+                onClick={() => saveProjectsDetailSnapshot(project.id, "list")}
+              >
                 <span className="block truncate">{project.title}</span>
                 {project.description ? (
-                  <span className="mt-0.5 block truncate text-xs font-normal text-neutral-500">{project.description}</span>
+                  <span className="mt-0.5 block truncate text-xs font-normal text-muted-foreground">{project.description}</span>
                 ) : null}
               </Link>
-              <span>{STATUS_TEXT[project.status]}</span>
-              <span>{PRIORITY_TEXT[project.priority]}</span>
+              <Badge variant="outline" className={getStatusToneClassName(project.status)}>
+                {STATUS_TEXT[project.status]}
+              </Badge>
+              <Badge variant="outline" className={getPriorityToneClassName(project.priority)}>
+                {PRIORITY_TEXT[project.priority]}
+              </Badge>
               <span>
-                <span className="inline-flex size-4 rounded-full border" style={{ backgroundColor: project.color || "#6b7280" }} />
+                <span className="inline-flex size-4 rounded-full border border-border" style={{ backgroundColor: project.color || "#8AA8E8" }} />
               </span>
               <span>{project.sortOrder}</span>
-              <span className="text-xs text-neutral-500">{project.updatedAt?.slice(0, 10)}</span>
+              <span className="text-xs text-muted-foreground">{project.updatedAt?.slice(0, 10)}</span>
               <div className="flex justify-end gap-1">
                 <Button type="button" size="icon-sm" variant="outline" disabled={index === 0} onClick={() => void handleMoveProject(project.id, -1)}>
                   <ArrowUp className="size-3.5" />
@@ -330,61 +355,72 @@ export default function ProjectsPage() {
           ))}
         </section>
       ) : viewMode === "cards" ? (
-        <section className="rounded-lg border border-neutral-200 bg-white p-4">
+        <section className="rounded-xl border bg-card p-4 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="text-base font-semibold">卡片视图</h2>
-              <p className="text-xs text-neutral-500">每个项目一张卡，适合快速查看周期和状态。</p>
+              <p className="text-xs text-muted-foreground">每个项目一张卡，适合快速查看周期和状态。</p>
             </div>
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {sortedProjects.map((project) => (
-              <Link key={project.id} href={getProjectHref(project.id, viewMode)} className="group rounded-2xl border border-neutral-200 bg-neutral-50 p-4 transition hover:-translate-y-0.5 hover:border-neutral-300 hover:bg-white">
-                <div className="mb-4 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="truncate text-lg font-semibold group-hover:underline">{project.title}</h3>
-                    <p className="mt-1 line-clamp-2 text-xs text-neutral-500">{project.description || "暂无描述"}</p>
+              <Link
+                key={project.id}
+                href={getProjectHref(project.id, viewMode)}
+                className="group block"
+                onClick={() => saveProjectsDetailSnapshot(project.id, "board")}
+              >
+                <Card className="h-full p-4 transition group-hover:-translate-y-0.5 group-hover:shadow-md">
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="truncate text-lg font-semibold group-hover:underline">{project.title}</h3>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{project.description || "暂无描述"}</p>
+                    </div>
+                    <span className="inline-flex size-4 rounded-full border border-border" style={{ backgroundColor: project.color || "#8AA8E8" }} />
                   </div>
-                  <span className="inline-flex size-4 rounded-full border" style={{ backgroundColor: project.color || "#6b7280" }} />
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-neutral-500">
-                  <div className="rounded-xl bg-white px-3 py-2">
-                    <span className="block text-[11px]">状态</span>
-                    <span className="block font-medium text-neutral-900">{STATUS_TEXT[project.status]}</span>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                    <div className="rounded-xl border bg-background px-3 py-2">
+                      <span className="block text-[11px]">状态</span>
+                      <Badge variant="outline" className={getStatusToneClassName(project.status)}>
+                        {STATUS_TEXT[project.status]}
+                      </Badge>
+                    </div>
+                    <div className="rounded-xl border bg-background px-3 py-2">
+                      <span className="block text-[11px]">优先级</span>
+                      <Badge variant="outline" className={getPriorityToneClassName(project.priority)}>
+                        {PRIORITY_TEXT[project.priority]}
+                      </Badge>
+                    </div>
+                    <div className="rounded-xl border bg-background px-3 py-2">
+                      <span className="block text-[11px]">开始</span>
+                      <span className="block font-medium text-foreground">{project.startedAt || "未设置"}</span>
+                    </div>
+                    <div className="rounded-xl border bg-background px-3 py-2">
+                      <span className="block text-[11px]">计划结束</span>
+                      <span className="block font-medium text-foreground">{project.dueAt || "未设置"}</span>
+                    </div>
                   </div>
-                  <div className="rounded-xl bg-white px-3 py-2">
-                    <span className="block text-[11px]">优先级</span>
-                    <span className="block font-medium text-neutral-900">{PRIORITY_TEXT[project.priority]}</span>
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-muted">
+                    <div className="h-2 rounded-full bg-[linear-gradient(90deg,#8AA8E8_0%,#8CC9A1_100%)]" style={{ width: project.startedAt && project.dueAt ? "100%" : "45%" }} />
                   </div>
-                  <div className="rounded-xl bg-white px-3 py-2">
-                    <span className="block text-[11px]">开始</span>
-                    <span className="block font-medium text-neutral-900">{project.startedAt || "未设置"}</span>
-                  </div>
-                  <div className="rounded-xl bg-white px-3 py-2">
-                    <span className="block text-[11px]">计划结束</span>
-                    <span className="block font-medium text-neutral-900">{project.dueAt || "未设置"}</span>
-                  </div>
-                </div>
-                <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
-                  <div className="h-2 rounded-full bg-[linear-gradient(90deg,#2563eb_0%,#38bdf8_100%)]" style={{ width: project.startedAt && project.dueAt ? "100%" : "45%" }} />
-                </div>
+                </Card>
               </Link>
             ))}
           </div>
         </section>
       ) : (
-        <section className="rounded-lg border border-neutral-200 bg-white p-4">
+        <section className="rounded-xl border bg-card p-4 shadow-sm">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold">甘特视图</h2>
-              <p className="text-xs text-neutral-500">按项目开始和计划结束时间，快速扫一眼整个周期。</p>
+              <p className="text-xs text-muted-foreground">按项目开始和计划结束时间，快速扫一眼整个周期。</p>
             </div>
           </div>
           <ProjectGantt projects={sortedProjects} />
         </section>
       )}
 
-      {!loading && sortedProjects.length === 0 ? <p className="mt-6 text-sm text-neutral-500">暂无项目。</p> : null}
+      {!loading && sortedProjects.length === 0 ? <p className="mt-6 text-sm text-muted-foreground">暂无项目。</p> : null}
     </main>
   )
 }
@@ -444,27 +480,33 @@ function ProjectDialog(props: {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
             <Label>状态</Label>
-            <select
-              value={form.status}
-              onChange={(event) => onFormChange({ ...form, status: event.target.value as ProjectStatus })}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            >
-              {Object.entries(STATUS_TEXT).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+            <Select value={form.status} onValueChange={(value) => onFormChange({ ...form, status: value as ProjectStatus })}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(STATUS_TEXT).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-2">
             <Label>优先级</Label>
-            <select
-              value={form.priority}
-              onChange={(event) => onFormChange({ ...form, priority: event.target.value as Priority })}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            >
-              {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+            <Select value={form.priority} onValueChange={(value) => onFormChange({ ...form, priority: value as Priority })}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(PRIORITY_TEXT).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
         <div className="grid gap-3 md:grid-cols-3">
@@ -496,7 +538,7 @@ function ProjectDialog(props: {
                 type="button"
                 aria-label={`选择颜色 ${color}`}
                 onClick={() => onFormChange({ ...form, color })}
-                className={form.color === color ? "size-7 rounded-full border-2 border-neutral-900" : "size-7 rounded-full border border-neutral-200"}
+                className={form.color === color ? "size-7 rounded-full border-2 border-slate-400" : "size-7 rounded-full border border-border"}
                 style={{ backgroundColor: color }}
               />
             ))}
@@ -531,9 +573,9 @@ function ProjectGantt(props: {
     <div className="space-y-3 overflow-x-auto">
       <div className="min-w-[820px]">
         <div className="grid" style={{ gridTemplateColumns: `240px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
-          <div className="px-2 py-2 text-xs font-medium text-neutral-500">项目</div>
+          <div className="px-2 py-2 text-xs font-medium text-muted-foreground">项目</div>
           {dayColumns.map((day) => (
-            <div key={day.toISOString()} className="px-1 py-2 text-center text-[11px] text-neutral-500">
+            <div key={day.toISOString()} className="px-1 py-2 text-center text-[11px] text-muted-foreground">
               {formatTimelineDay(day)}
             </div>
           ))}
@@ -551,21 +593,26 @@ function ProjectGantt(props: {
               <Link
                 key={project.id}
                 href={`/projects/${project.id}?view=gantt`}
-                className="grid items-center gap-2 rounded-2xl border border-neutral-200 bg-neutral-50 px-2 py-3 hover:bg-white"
+                className="grid items-center gap-2 rounded-xl border bg-card px-3 py-3 shadow-sm transition hover:bg-accent/30"
+                onClick={() => saveProjectsDetailSnapshot(project.id, "gantt")}
                 style={{ gridTemplateColumns: `240px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}
               >
                 <div className="min-w-0 px-2">
                   <p className="truncate text-sm font-semibold">{project.title}</p>
-                  <p className="text-[11px] text-neutral-500">
-                    {STATUS_TEXT[project.status]} · {project.startedAt || "未开始"} → {project.dueAt || project.completedAt || "未结束"}
+                  <p className="text-[11px] text-muted-foreground">
+                    <Badge variant="outline" className={getStatusToneClassName(project.status)}>
+                      {STATUS_TEXT[project.status]}
+                    </Badge>
+                    <span className="mx-1">·</span>
+                    {project.startedAt || "未开始"} → {project.dueAt || project.completedAt || "未结束"}
                   </p>
                 </div>
                 <div className="relative col-span-full grid" style={{ gridTemplateColumns: `240px repeat(${dayColumns.length}, minmax(22px, 1fr))` }}>
                   <div
-                    className="col-start-2 row-start-1 my-1.5 h-7 rounded-xl px-2 py-1 text-xs text-white shadow-sm"
+                    className="col-start-2 row-start-1 my-1.5 h-7 rounded-lg px-2 py-1 text-xs text-white/90 shadow-sm"
                     style={{
                       gridColumn: `${startIndex + 2} / span ${Math.min(span, dayColumns.length - startIndex)}`,
-                      backgroundColor: project.color || "#2563eb",
+                      backgroundColor: project.color || "#8AA8E8",
                     }}
                   >
                     <span className="block truncate">{PRIORITY_TEXT[project.priority]}</span>

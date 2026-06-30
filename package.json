@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "electron:dev": "concurrently \"npm run dev\" \"cd electron && ELECTRON_RENDERER_URL=http://localhost:3000 npm run start\"",
-    "electron:prod": "concurrently \"npm run start\" \"npx wait-on http://localhost:3000 && cd electron && npm run start\""
+    "electron:prod": "npm run build && concurrently \"npm run start\" \"npx wait-on http://localhost:3000 && cd electron && npm run start\""
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",

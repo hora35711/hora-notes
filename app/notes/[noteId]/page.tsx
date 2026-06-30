@@ -637,37 +637,38 @@ export default function NoteEditorPage() {
   return (
     <section className="flex h-[calc(100vh-2rem)] flex-col">
       {/* 第一行：左侧展开按钮 + 标签行（同一行）。 */}
-      <header className="mb-2 flex items-center gap-2 border-b border-neutral-200 pb-2">
+      <header className="mb-2 flex items-center gap-2 border-b border-border pb-2">
         <SidebarTrigger className="shrink-0" />
 
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {tabs.map((tab) => (
-            <button
+            <div
               key={tab.id}
-              type="button"
-              onClick={() => handleSwitchTab(tab.id)}
-              className={tab.id === activeTabId
-                ? "group max-w-[220px] shrink-0 rounded-md border border-neutral-300 bg-neutral-100 px-2 py-1 text-[12px] font-medium"
-                : "group max-w-[220px] shrink-0 rounded-md border border-transparent px-2 py-1 text-[12px] text-muted-foreground hover:border-neutral-200 hover:bg-neutral-50"
-              }
+              className="group flex max-w-[220px] shrink-0 items-center gap-1 rounded-lg border border-border bg-background p-1 shadow-sm"
             >
-              {/* 标签内容区：左侧标题单行省略，右侧关闭按钮。 */}
-              <span className="flex min-w-0 items-center gap-1">
-                <span className="min-w-0 flex-1 truncate text-left">{tab.label}</span>
-                <span
-                  role="button"
-                  aria-label={`关闭标签 ${tab.label}`}
-                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded opacity-70 hover:bg-neutral-200 hover:opacity-100"
-                  onClick={(event) => {
-                    // 阻止触发父级切换，确保只执行关闭动作。
-                    event.stopPropagation()
-                    handleCloseTab(tab.id)
-                  }}
-                >
-                  <X className="size-3" />
-                </span>
-              </span>
-            </button>
+              {/* 标签标题按钮：只负责切换，避免和关闭按钮发生嵌套冲突。 */}
+              <Button
+                type="button"
+                onClick={() => handleSwitchTab(tab.id)}
+                variant={tab.id === activeTabId ? "secondary" : "ghost"}
+                size="sm"
+                className="min-w-0 flex-1 justify-start gap-2 px-2"
+              >
+                <span className="min-w-0 truncate text-left">{tab.label}</span>
+              </Button>
+
+              {/* 关闭按钮：使用独立图标按钮，保持结构和可点击区域都更清晰。 */}
+              <Button
+                type="button"
+                aria-label={`关闭标签 ${tab.label}`}
+                variant="ghost"
+                size="icon-sm"
+                className="shrink-0 text-muted-foreground opacity-70 transition group-hover:opacity-100"
+                onClick={() => handleCloseTab(tab.id)}
+              >
+                <X className="size-3.5" />
+              </Button>
+            </div>
           ))}
         </div>
 
@@ -678,121 +679,123 @@ export default function NoteEditorPage() {
 
       {tabs.length === 0 ? (
         <div className="flex min-h-0 flex-1 items-center justify-center">
-          <div className="flex flex-col items-center gap-3 text-center text-black">
+          <div className="flex flex-col items-center gap-3 text-center text-foreground">
             <p className="text-base font-medium">未打开文件</p>
-            <button
+            <Button
               type="button"
-              className="text-sm underline-offset-4 hover:underline"
+              variant="link"
+              size="sm"
               onClick={() => {
                 void handleCreateFileFromBlank()
               }}
             >
               创建新文件
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="text-sm underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+              variant="link"
+              size="sm"
               onClick={handleReopenLastClosedTab}
               disabled={!lastClosedTab}
             >
               打开上一个标签页
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
         <>
-      {/* 面包屑：显示当前文件路径。 */}
-      <div className="mb-1 flex justify-center text-center text-[10px] text-neutral-400">
-        <Breadcrumb>
-          <BreadcrumbList className="justify-center gap-1 text-[10px] text-neutral-400">
-            {pathParts.length === 0 ? (
-              <BreadcrumbItem>
-                <BreadcrumbPage className="text-neutral-400">空白标签</BreadcrumbPage>
-              </BreadcrumbItem>
-            ) : (
-              pathParts.map((part, index) => (
-                <React.Fragment key={`${part}-${index}`}>
+          {/* 面包屑：显示当前文件路径。 */}
+          <div className="mb-1 flex justify-center text-center text-[10px] text-muted-foreground">
+            <Breadcrumb>
+              <BreadcrumbList className="justify-center gap-1 text-[10px] text-muted-foreground">
+                {pathParts.length === 0 ? (
                   <BreadcrumbItem>
-                    <BreadcrumbPage className="text-neutral-400">{part}</BreadcrumbPage>
+                    <BreadcrumbPage className="text-muted-foreground">空白标签</BreadcrumbPage>
                   </BreadcrumbItem>
-                  {index < pathParts.length - 1 ? <BreadcrumbSeparator /> : null}
-                </React.Fragment>
-              ))
-            )}
-          </BreadcrumbList>
-        </Breadcrumb>
-      </div>
+                ) : (
+                  pathParts.map((part, index) => (
+                    <React.Fragment key={`${part}-${index}`}>
+                      <BreadcrumbItem>
+                        <BreadcrumbPage className="text-muted-foreground">{part}</BreadcrumbPage>
+                      </BreadcrumbItem>
+                      {index < pathParts.length - 1 ? <BreadcrumbSeparator /> : null}
+                    </React.Fragment>
+                  ))
+                )}
+              </BreadcrumbList>
+            </Breadcrumb>
+          </div>
 
-      {/* 错误提示。 */}
-      {error ? <p className="mb-2 text-sm text-rose-600">{error}</p> : null}
+          {/* 错误提示。 */}
+          {error ? <p className="mb-2 text-sm text-rose-600">{error}</p> : null}
 
-      {/* 编辑区：去掉外层圆角和内缩，消除边框间距。 */}
-      <div className="min-h-0 flex-1 overflow-hidden border border-neutral-200 bg-white">
-        {noteFileKind === "drawing" ? (
-          <div className="h-full min-h-0">
-            {drawingReady ? (
-              <Excalidraw
-                key={`${activeTabId}:${noteId ?? activeTab?.noteId ?? "blank"}:${drawingRenderVersion}`}
-                initialData={drawingInitialData}
-                // 自动聚焦画布，确保复制/粘贴等快捷键可直接命中 Excalidraw。
-                autoFocus
-                excalidrawAPI={(api) => {
-                  // 缓存 API：后续如需扩展动作（如导入）可复用。
-                  excalidrawApiRef.current = api
-                }}
-                onChange={(elements, appState, files) => {
-                  // 实时缓存画布状态，供保存时直接序列化。
-                  drawingSceneRef.current = { elements, appState, files }
+          {/* 编辑区：去掉外层圆角和内缩，消除边框间距。 */}
+          <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+            {noteFileKind === "drawing" ? (
+              <div className="h-full min-h-0">
+                {drawingReady ? (
+                  <Excalidraw
+                    key={`${activeTabId}:${noteId ?? activeTab?.noteId ?? "blank"}:${drawingRenderVersion}`}
+                    initialData={drawingInitialData}
+                    // 自动聚焦画布，确保复制/粘贴等快捷键可直接命中 Excalidraw。
+                    autoFocus
+                    excalidrawAPI={(api) => {
+                      // 缓存 API：后续如需扩展动作（如导入）可复用。
+                      excalidrawApiRef.current = api
+                    }}
+                    onChange={(elements, appState, files) => {
+                      // 实时缓存画布状态，供保存时直接序列化。
+                      drawingSceneRef.current = { elements, appState, files }
+                    }}
+                  />
+                ) : (
+                  // 绘图内容加载中占位：避免出现“先空白后不刷新”的错觉。
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    正在加载绘图...
+                  </div>
+                )}
+              </div>
+            ) : noteFileKind === "text" ? (
+              // 文本编辑：不进入富文本编辑器，保存时直接写回原始纯文本。
+              <textarea
+                value={textPreview}
+                onChange={(event) => setTextPreview(event.target.value)}
+                spellCheck={false}
+                className="h-full w-full resize-none overflow-auto border-0 bg-card p-4 font-mono text-sm leading-6 text-foreground outline-none"
+              />
+            ) : noteFileKind === "external" ? (
+              <div className="flex h-full items-center justify-center p-6 text-center">
+                <div className="max-w-sm space-y-3 text-sm text-muted-foreground">
+                  <p className="text-base font-medium text-foreground">已使用系统默认应用打开</p>
+                  <p>该文件类型不适合直接在编辑器中读写，避免损坏原文件。</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      if (noteId) void window.horaDB?.openNoteWithDefaultApp(noteId)
+                    }}
+                  >
+                    再次打开
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <SimpleEditor
+                // 使用标签与文件绑定作为 key，切换标签时强制重建编辑器，立即显示对应内容。
+                key={`${activeTabId}:${activeTab?.noteId ?? "blank"}`}
+                contentKey={`${activeTabId}:${noteId ?? activeTab?.noteId ?? "blank"}`}
+                initialContent={initialHtml}
+                onContentChange={setEditorHtml}
+                onSave={() => {
+                  void handleSave()
                 }}
               />
-            ) : (
-              // 绘图内容加载中占位：避免出现“先空白后不刷新”的错觉。
-              <div className="flex h-full items-center justify-center text-sm text-neutral-500">
-                正在加载绘图...
-              </div>
             )}
           </div>
-        ) : noteFileKind === "text" ? (
-          // 文本编辑：不进入富文本编辑器，保存时直接写回原始纯文本。
-          <textarea
-            value={textPreview}
-            onChange={(event) => setTextPreview(event.target.value)}
-            spellCheck={false}
-            className="h-full w-full resize-none overflow-auto border-0 bg-white p-4 font-mono text-sm leading-6 text-neutral-800 outline-none"
-          />
-        ) : noteFileKind === "external" ? (
-          <div className="flex h-full items-center justify-center p-6 text-center">
-            <div className="max-w-sm space-y-3 text-sm text-neutral-500">
-              <p className="text-base font-medium text-neutral-900">已使用系统默认应用打开</p>
-              <p>该文件类型不适合直接在编辑器中读写，避免损坏原文件。</p>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (noteId) void window.horaDB?.openNoteWithDefaultApp(noteId)
-                }}
-              >
-                再次打开
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <SimpleEditor
-            // 使用标签与文件绑定作为 key，切换标签时强制重建编辑器，立即显示对应内容。
-            key={`${activeTabId}:${activeTab?.noteId ?? "blank"}`}
-            contentKey={`${activeTabId}:${noteId ?? activeTab?.noteId ?? "blank"}`}
-            initialContent={initialHtml}
-            onContentChange={setEditorHtml}
-            onSave={() => {
-              void handleSave()
-            }}
-          />
-        )}
-      </div>
 
-      {lastSavedAt ? (
-        <p className="mt-1 text-[10px] text-neutral-400">上次保存：{lastSavedAt}</p>
-      ) : null}
+          {lastSavedAt ? (
+            <p className="mt-1 text-[10px] text-muted-foreground">上次保存：{lastSavedAt}</p>
+          ) : null}
         </>
       )}
     </section>

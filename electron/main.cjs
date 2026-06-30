@@ -1,7 +1,7 @@
 // Electron 主进程：启动窗口、注册 IPC，并桥接笔记变更事件。
 const path = require("node:path")
 const fs = require("node:fs")
-const { app, BrowserWindow, ipcMain, shell } = require("electron")
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron")
 const db = require("./db.cjs")
 
 let mainWindow = null
@@ -76,6 +76,43 @@ function registerDbIpc() {
   ipcMain.handle("db:tasks:updateStatus", (_event, input) => db.updateTaskStatus(input))
   ipcMain.handle("db:tasks:delete", (_event, taskId) => db.deleteTask(taskId))
   ipcMain.handle("db:tasks:reorder", (_event, input) => db.reorderTasks(input))
+
+  // 插件管理：设置页通过这些接口同步插件目录与配置。
+  ipcMain.handle("db:plugins:list", () => db.listPlugins())
+  ipcMain.handle("db:plugins:get", (_event, pluginKey) => db.getPluginByKey(pluginKey))
+  ipcMain.handle("db:plugins:refresh", () => db.refreshPlugins())
+  ipcMain.handle("db:plugins:update", (_event, input) => db.updatePlugin(input))
+  ipcMain.handle("db:plugins:setEnabled", (_event, pluginKey, enabled) => db.setPluginEnabled(pluginKey, enabled))
+  ipcMain.handle("db:plugins:reorder", (_event, input) => db.reorderPlugins(input))
+  ipcMain.handle("db:plugins:updateSettings", (_event, input) => db.updatePluginSettings(input))
+  ipcMain.handle("db:plugins:getRootPath", () => db.getPluginsRootPath())
+  ipcMain.handle("db:plugins:import", async () => {
+    // 让用户选择一个插件文件夹，导入后提示重启以便完成菜单注册。
+    const result = await dialog.showOpenDialog({
+      title: "导入插件包",
+      properties: ["openDirectory", "createDirectory"],
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { imported: false, reason: "canceled" }
+    }
+
+    const sourceDir = result.filePaths[0]
+    const targetDir = db.importPluginPackage(sourceDir)
+    const plugins = db.refreshPlugins()
+    return {
+      imported: true,
+      targetDir,
+      plugins,
+      restartRecommended: true,
+    }
+  })
+  ipcMain.handle("app:restart", () => {
+    // 重启应用：插件导入后如果需要重新挂载侧边栏入口，可以直接走这一条。
+    app.relaunch()
+    app.exit(0)
+    return true
+  })
 
   ipcMain.handle("db:noteLinks:listByProject", (_event, projectId) => db.listNotesByProject(projectId))
   ipcMain.handle("db:noteLinks:listByRequirement", (_event, requirementId) => db.listNotesByRequirement(requirementId))

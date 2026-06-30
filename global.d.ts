@@ -71,6 +71,49 @@ type LinkedNoteRecord = {
   updatedAt: string
 }
 
+type PluginUiMode = "editor" | "display" | "panel"
+
+type PluginModuleRecord = {
+  id: string
+  title: string
+  orderIndex: number
+}
+
+type PluginManifestRecord = {
+  name: string
+  displayName: string
+  version: string
+  description: string | null
+  sourcePath: string
+  uiMode: PluginUiMode
+  orderIndex: number
+  permissions: {
+    read: string[]
+    write: string[]
+  }
+  modules: PluginModuleRecord[]
+}
+
+type PluginRecord = {
+  id: string
+  pluginKey: string
+  displayName: string
+  description: string | null
+  version: string
+  sourcePath: string
+  sourceType: "local"
+  uiMode: PluginUiMode
+  enabled: 0 | 1
+  isInstalled: 0 | 1
+  orderIndex: number
+  manifestJson: string
+  permissionsJson: string
+  settingsJson: string
+  createdAt: string
+  updatedAt: string
+  manifest: PluginManifestRecord
+}
+
 type HoraDBBridge = {
   listProjects: () => Promise<ProjectRecord[]>
   createProject: (input: Partial<ProjectRecord> & { title: string }) => Promise<ProjectRecord | null>
@@ -153,6 +196,16 @@ type HoraDBBridge = {
   // 使用系统默认应用打开指定笔记区文件。
   openNoteWithDefaultApp: (noteId: string) => Promise<boolean>
   onNotesChanged: (callback: () => void) => (() => void) | undefined
+  listPlugins: () => Promise<PluginRecord[]>
+  getPlugin: (pluginKey: string) => Promise<PluginRecord | null>
+  refreshPlugins: () => Promise<PluginRecord[]>
+  updatePlugin: (input: Partial<PluginRecord> & { pluginKey: string }) => Promise<PluginRecord | null>
+  setPluginEnabled: (pluginKey: string, enabled: boolean) => Promise<PluginRecord | null>
+  reorderPlugins: (input: { items: { pluginKey: string; orderIndex: number }[] }) => Promise<boolean>
+  updatePluginSettings: (input: { pluginKey: string; settingsJson: string }) => Promise<PluginRecord | null>
+  getPluginRootPath: () => Promise<string>
+  importPluginPackage: () => Promise<{ imported: boolean; reason?: string; targetDir?: string; restartRecommended?: boolean; plugins?: PluginRecord[] }>
+  restartApp: () => Promise<boolean>
 }
 
 declare global {

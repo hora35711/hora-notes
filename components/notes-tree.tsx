@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 import { type NoteTreeNode } from "@/components/sidebar-data"
 
@@ -108,7 +109,6 @@ export function NotesTree({
     return folder.filePath.startsWith(`${item.filePath}/`)
   }
 
-
   // 在 Finder 中定位当前节点：只调用系统能力，不改变左侧选中、展开或路由。
   const handleShowInFinder = async (id: string) => {
     try {
@@ -176,7 +176,7 @@ export function NotesTree({
             <ContextMenuTrigger asChild>
               <div>
                 <SidebarMenuButton
-                  className="text-[12px]"
+                  className="h-8 gap-2 px-2 text-[12px]"
                   onClick={() => {
                     // 追加 open 参数，保证同一文件重复点击也会触发打开动作。
                     router.push(`/notes/${item.id}?open=${Date.now()}`)
@@ -231,8 +231,10 @@ export function NotesTree({
           <ContextMenuTrigger asChild>
             <div>
               <CollapsibleTrigger asChild>
-                <SidebarMenuButton className="text-[12px]">
-                  <ChevronRight className={open ? "shrink-0 rotate-90 transition-transform" : "shrink-0 transition-transform"} />
+                <SidebarMenuButton className="h-8 gap-2 px-2 text-[12px]">
+                  <ChevronRight
+                    className={open ? "shrink-0 rotate-90 transition-transform" : "shrink-0 transition-transform"}
+                  />
                   {/* 超长标题单行省略。 */}
                   <span className="min-w-0 flex-1 truncate">{item.title}</span>
                 </SidebarMenuButton>
@@ -309,10 +311,10 @@ function NoteActionDialog(props: {
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>
-            {action?.kind === "create-file" && "新建文件"}
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {action?.kind === "create-file" && "新建文件"}
             {action?.kind === "create-drawing" && "新建绘图"}
             {action?.kind === "create-folder" && "新建文件夹"}
             {action?.kind === "rename" && "重命名"}
@@ -329,18 +331,22 @@ function NoteActionDialog(props: {
         </DialogHeader>
 
         {isMove ? (
-          <select
-            value={moveTargetId}
-            onChange={(event) => onMoveTargetChange(event.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+          <Select
+            value={moveTargetId || "__root__"}
+            onValueChange={(value) => onMoveTargetChange(value === "__root__" ? "" : value)}
           >
-            <option value="">Notes 根目录</option>
-            {folderTargets.map((folder) => (
-              <option key={folder.id} value={folder.id} disabled={isInvalidMoveTarget(folder)}>
-                {folder.title}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="h-9">
+              <SelectValue placeholder="选择移动目标" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__root__">Notes 根目录</SelectItem>
+              {folderTargets.map((folder) => (
+                <SelectItem key={folder.id} value={folder.id} disabled={isInvalidMoveTarget(folder)}>
+                  {folder.title}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         ) : !isDelete ? (
           <Input
             autoFocus

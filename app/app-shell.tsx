@@ -6,15 +6,31 @@ import * as React from "react"
 import { usePathname } from "next/navigation"
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { AppSidebar } from "@/app/AppSidebar/app-sidebar"
+import { saveProjectsDetailHref } from "@/lib/projects-navigation-state"
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "hora_sidebar_width"
 const SIDEBAR_WIDTH_DEFAULT = 336
 const SIDEBAR_WIDTH_MIN = 220
 const SIDEBAR_WIDTH_MAX = 520
 
+// 根据当前路由判断是否处在 Project 模块的一级或二级页面。
+function getProjectsRouteLevel(pathname: string) {
+  if (pathname === "/projects") return "list"
+  if (pathname.startsWith("/projects/")) return "detail"
+  return null
+}
+
+function getHrefWithSearch(pathname: string, search: string) {
+  // 保存完整地址，确保二级页的视图参数也能跟着模块切换恢复。
+  const query = search.startsWith("?") ? search.slice(1) : search
+  return query ? `${pathname}?${query}` : pathname
+}
+
 // 主壳组件：左侧可拖拽、右侧自适应。
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const previousPathnameRef = React.useRef(pathname)
+  const previousHrefRef = React.useRef(pathname)
 
   // 当前 sidebar 宽度（px）。
   const [sidebarWidth, setSidebarWidth] = React.useState<number>(SIDEBAR_WIDTH_DEFAULT)
@@ -35,6 +51,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth))
   }, [sidebarWidth])
+
+  React.useEffect(() => {
+    const previousPathname = previousPathnameRef.current
+    const previousHref = previousHrefRef.current
+    const currentHref = getHrefWithSearch(pathname, window.location.search)
+    const previousProjectsLevel = getProjectsRouteLevel(previousPathname)
+    const currentProjectsLevel = getProjectsRouteLevel(pathname)
+
+    // 当前停留在 Project 模块时就记住完整地址，离开后再回来会回到当时离开的那一页。
+    if (currentProjectsLevel) {
+      saveProjectsDetailHref(currentHref)
+    }
+
+    // 切出 Project 模块时，也保留最后一次离开的真实地址。
+    if (previousProjectsLevel && !currentProjectsLevel) {
+      saveProjectsDetailHref(previousHref)
+    }
+
+    previousPathnameRef.current = pathname
+    previousHrefRef.current = currentHref
+  }, [pathname])
 
   // 开始拖拽：按鼠标 X 计算新宽度。
   const handleResizeStart = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {

@@ -33,6 +33,18 @@ contextBridge.exposeInMainWorld("horaDB", {
   linkNoteToTask: (noteId, taskId) => ipcRenderer.invoke("db:noteLinks:linkTask", noteId, taskId),
   unlinkNoteFromTask: (noteId, taskId) => ipcRenderer.invoke("db:noteLinks:unlinkTask", noteId, taskId),
 
+  // 插件元数据和设置：通过数据库保存启用状态、排序和配置信息。
+  listPlugins: () => ipcRenderer.invoke("db:plugins:list"),
+  getPlugin: (pluginKey) => ipcRenderer.invoke("db:plugins:get", pluginKey),
+  refreshPlugins: () => ipcRenderer.invoke("db:plugins:refresh"),
+  updatePlugin: (input) => ipcRenderer.invoke("db:plugins:update", input),
+  setPluginEnabled: (pluginKey, enabled) => ipcRenderer.invoke("db:plugins:setEnabled", pluginKey, enabled),
+  reorderPlugins: (input) => ipcRenderer.invoke("db:plugins:reorder", input),
+  updatePluginSettings: (input) => ipcRenderer.invoke("db:plugins:updateSettings", input),
+  getPluginRootPath: () => ipcRenderer.invoke("db:plugins:getRootPath"),
+  importPluginPackage: () => ipcRenderer.invoke("db:plugins:import"),
+  restartApp: () => ipcRenderer.invoke("app:restart"),
+
   listNoteNodes: () => ipcRenderer.invoke("db:notes:list"),
   getNote: (noteId) => ipcRenderer.invoke("db:notes:get", noteId),
   readNoteContent: (noteId) => ipcRenderer.invoke("db:notes:read", noteId),

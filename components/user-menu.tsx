@@ -1,5 +1,7 @@
 "use client"
 
+import { useRouter } from "next/navigation"
+
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,48 +20,57 @@ import {
   BellIcon,
   CreditCardIcon,
   LogOutIcon,
+  Settings2Icon,
 } from "lucide-react"
 
 export function UserMenu() {
+  // 点击菜单项时直接跳转，保持菜单行为和路由行为分离。
+  const router = useRouter()
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <SidebarMenuButton>
+        <SidebarMenuButton className="h-10 justify-start gap-2 px-2.5">
           <Avatar className="h-6 w-6">
             <AvatarImage src="https://github.com/shadcn.png" />
             <AvatarFallback>CN</AvatarFallback>
           </Avatar>
-          <span className="ml-2">用户A</span>
+          <span className="truncate text-sm">用户A</span>
         </SidebarMenuButton>
       </DropdownMenuTrigger>
 
-      <DropdownMenuContent align="end" className="w-48">
+      <DropdownMenuContent align="end" className="w-56 p-1.5">
         <DropdownMenuGroup>
-          <DropdownMenuItem>
-            <BadgeCheckIcon className="mr-2 h-4 w-4" />
+          <DropdownMenuItem className="gap-2 rounded-md px-2.5 py-2">
+            <BadgeCheckIcon className="size-4" />
             Account
           </DropdownMenuItem>
 
-          <DropdownMenuItem>
-            <CreditCardIcon className="mr-2 h-4 w-4" />
+          <DropdownMenuItem className="gap-2 rounded-md px-2.5 py-2">
+            <CreditCardIcon className="size-4" />
             Billing
           </DropdownMenuItem>
 
-          <DropdownMenuItem>
-            <BellIcon className="mr-2 h-4 w-4" />
+          <DropdownMenuItem className="gap-2 rounded-md px-2.5 py-2">
+            <BellIcon className="size-4" />
             Notifications
           </DropdownMenuItem>
 
-          <DropdownMenuItem>
-            <BellIcon className="mr-2 h-4 w-4" />
+          <DropdownMenuItem
+            className="gap-2 rounded-md px-2.5 py-2"
+            onSelect={() => {
+              router.push("/settings")
+            }}
+          >
+            <Settings2Icon className="size-4" />
             Settings
           </DropdownMenuItem>
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
 
-        <DropdownMenuItem className="text-red-500">
-          <LogOutIcon className="mr-2 h-4 w-4" />
+        <DropdownMenuItem variant="destructive" className="gap-2 rounded-md px-2.5 py-2">
+          <LogOutIcon className="size-4" />
           Sign Out
         </DropdownMenuItem>
       </DropdownMenuContent>

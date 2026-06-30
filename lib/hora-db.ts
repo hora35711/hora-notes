@@ -58,6 +58,49 @@ export type LinkedNoteRecord = {
   updatedAt: string
 }
 
+export type PluginUiMode = "editor" | "display" | "panel"
+
+export type PluginModuleRecord = {
+  id: string
+  title: string
+  orderIndex: number
+}
+
+export type PluginManifestRecord = {
+  name: string
+  displayName: string
+  version: string
+  description: string | null
+  sourcePath: string
+  uiMode: PluginUiMode
+  orderIndex: number
+  permissions: {
+    read: string[]
+    write: string[]
+  }
+  modules: PluginModuleRecord[]
+}
+
+export type PluginRecord = {
+  id: string
+  pluginKey: string
+  displayName: string
+  description: string | null
+  version: string
+  sourcePath: string
+  sourceType: "local"
+  uiMode: PluginUiMode
+  enabled: 0 | 1
+  isInstalled: 0 | 1
+  orderIndex: number
+  manifestJson: string
+  permissionsJson: string
+  settingsJson: string
+  createdAt: string
+  updatedAt: string
+  manifest: PluginManifestRecord
+}
+
 export type NoteNodeRow = {
   id: string
   parentId: string | null
@@ -86,6 +129,14 @@ function requireHoraDB() {
   throw new Error("当前不是 Electron 运行环境，无法写入本地数据库")
 }
 
+// 数据写入后统一广播一次，方便项目页、任务页和列表页互相刷新。
+function notifyHoraDbUpdated(scope: string) {
+  if (typeof window === "undefined") return
+  const revision = `${Date.now()}-${scope}`
+  window.localStorage.setItem("hora_db_revision", revision)
+  window.dispatchEvent(new CustomEvent("hora:db-updated", { detail: { scope, revision } }))
+}
+
 export async function listProjects(): Promise<ProjectRecord[]> {
   if (typeof window !== "undefined" && window.horaDB?.listProjects) return window.horaDB.listProjects()
   return []
@@ -97,19 +148,27 @@ export async function getProject(projectId: string): Promise<ProjectRecord | nul
 }
 
 export async function createProject(input: Partial<ProjectRecord> & { title: string }) {
-  return requireHoraDB().createProject(input)
+  const result = await requireHoraDB().createProject(input)
+  notifyHoraDbUpdated("project")
+  return result
 }
 
 export async function updateProject(input: Partial<ProjectRecord> & { id: string }) {
-  return requireHoraDB().updateProject(input)
+  const result = await requireHoraDB().updateProject(input)
+  notifyHoraDbUpdated("project")
+  return result
 }
 
 export async function deleteProject(projectId: string) {
-  return requireHoraDB().deleteProject(projectId)
+  const result = await requireHoraDB().deleteProject(projectId)
+  notifyHoraDbUpdated("project")
+  return result
 }
 
 export async function reorderProjects(input: { items: { id: string; sortOrder: number }[] }) {
-  return requireHoraDB().reorderProjects(input)
+  const result = await requireHoraDB().reorderProjects(input)
+  notifyHoraDbUpdated("project")
+  return result
 }
 
 export async function listRequirementsByProject(projectId: string): Promise<RequirementRecord[]> {
@@ -128,19 +187,27 @@ export async function createRequirement(input: {
   color?: string | null
   dueAt?: string | null
 }) {
-  return requireHoraDB().createRequirement(input)
+  const result = await requireHoraDB().createRequirement(input)
+  notifyHoraDbUpdated("requirement")
+  return result
 }
 
 export async function updateRequirement(input: Partial<RequirementRecord> & { id: string }) {
-  return requireHoraDB().updateRequirement(input)
+  const result = await requireHoraDB().updateRequirement(input)
+  notifyHoraDbUpdated("requirement")
+  return result
 }
 
 export async function deleteRequirement(requirementId: string) {
-  return requireHoraDB().deleteRequirement(requirementId)
+  const result = await requireHoraDB().deleteRequirement(requirementId)
+  notifyHoraDbUpdated("requirement")
+  return result
 }
 
 export async function reorderRequirements(input: { projectId: string; items: { id: string; sortOrder: number }[] }) {
-  return requireHoraDB().reorderRequirements(input)
+  const result = await requireHoraDB().reorderRequirements(input)
+  notifyHoraDbUpdated("requirement")
+  return result
 }
 
 export async function listTasksByProject(projectId: string): Promise<TaskRecord[]> {
@@ -167,23 +234,33 @@ export async function createTask(input: {
   dueAt?: string | null
   startedAt?: string | null
 }) {
-  return requireHoraDB().createTask(input)
+  const result = await requireHoraDB().createTask(input)
+  notifyHoraDbUpdated("task")
+  return result
 }
 
 export async function updateTask(input: Omit<Partial<TaskRecord>, "isCompleted"> & { id: string; isCompleted?: boolean | 0 | 1 }) {
-  return requireHoraDB().updateTask(input)
+  const result = await requireHoraDB().updateTask(input)
+  notifyHoraDbUpdated("task")
+  return result
 }
 
 export async function updateTaskStatus(input: { id: string; status?: TaskStatus; done?: boolean }) {
-  return requireHoraDB().updateTaskStatus(input)
+  const result = await requireHoraDB().updateTaskStatus(input)
+  notifyHoraDbUpdated("task")
+  return result
 }
 
 export async function deleteTask(taskId: string) {
-  return requireHoraDB().deleteTask(taskId)
+  const result = await requireHoraDB().deleteTask(taskId)
+  notifyHoraDbUpdated("task")
+  return result
 }
 
 export async function reorderTasks(input: { projectId: string; items: { id: string; sortOrder: number }[] }) {
-  return requireHoraDB().reorderTasks(input)
+  const result = await requireHoraDB().reorderTasks(input)
+  notifyHoraDbUpdated("task")
+  return result
 }
 
 export async function listNotesByProject(projectId: string): Promise<LinkedNoteRecord[]> {
@@ -191,6 +268,62 @@ export async function listNotesByProject(projectId: string): Promise<LinkedNoteR
     return window.horaDB.listNotesByProject(projectId)
   }
   return []
+}
+
+export async function listPlugins(): Promise<PluginRecord[]> {
+  if (typeof window !== "undefined" && window.horaDB?.listPlugins) return window.horaDB.listPlugins()
+  return []
+}
+
+export async function getPlugin(pluginKey: string): Promise<PluginRecord | null> {
+  if (typeof window !== "undefined" && window.horaDB?.getPlugin) return window.horaDB.getPlugin(pluginKey)
+  return null
+}
+
+export async function refreshPlugins(): Promise<PluginRecord[]> {
+  if (typeof window !== "undefined" && window.horaDB?.refreshPlugins) return window.horaDB.refreshPlugins()
+  return []
+}
+
+export async function updatePlugin(input: Partial<PluginRecord> & { pluginKey: string }) {
+  const result = await requireHoraDB().updatePlugin(input)
+  notifyHoraDbUpdated("plugin")
+  return result
+}
+
+export async function setPluginEnabled(pluginKey: string, enabled: boolean) {
+  const result = await requireHoraDB().setPluginEnabled(pluginKey, enabled)
+  notifyHoraDbUpdated("plugin")
+  return result
+}
+
+export async function reorderPlugins(input: { items: { pluginKey: string; orderIndex: number }[] }) {
+  const result = await requireHoraDB().reorderPlugins(input)
+  notifyHoraDbUpdated("plugin")
+  return result
+}
+
+export async function updatePluginSettings(input: { pluginKey: string; settingsJson: string }) {
+  const result = await requireHoraDB().updatePluginSettings(input)
+  notifyHoraDbUpdated("plugin")
+  return result
+}
+
+export async function getPluginRootPath(): Promise<string> {
+  if (typeof window !== "undefined" && window.horaDB?.getPluginRootPath) return window.horaDB.getPluginRootPath()
+  return ""
+}
+
+export async function importPluginPackage() {
+  const result = await requireHoraDB().importPluginPackage()
+  if (result?.imported) {
+    notifyHoraDbUpdated("plugin")
+  }
+  return result
+}
+
+export async function restartApp() {
+  return requireHoraDB().restartApp()
 }
 
 export async function listNoteNodes(): Promise<NoteNodeRow[]> {

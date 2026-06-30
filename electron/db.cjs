@@ -35,6 +35,18 @@ function getDbPath() {
   return path.join(getHoraDataPath(), "hora.db")
 }
 
+// 统一路径：插件包根目录。
+function getPluginsRootPath() {
+  return path.join(getHoraDataPath(), "plugins")
+}
+
+// 确保插件根目录存在：打包后插件包必须落在用户可写路径。
+function ensurePluginsRootPath() {
+  const pluginsPath = getPluginsRootPath()
+  fs.mkdirSync(pluginsPath, { recursive: true })
+  return pluginsPath
+}
+
 // 解析初始化 SQL 路径：兼容开发与打包。
 function resolveSqlPath() {
   if (app.isPackaged) {
@@ -153,6 +165,55 @@ function buildNodeId(prefix, relativePath) {
 // 生成业务实体 ID：项目/需求/任务不依赖文件路径，使用随机种子避免毫秒冲突。
 function buildEntityId(prefix) {
   return `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`
+}
+
+// 插件 UI 模式：用于设置页和插件清单同步。
+const PLUGIN_UI_MODES = new Set(["editor", "display", "panel"])
+
+// 规范化插件模块条目：即使清单缺字段也尽量给出稳定结构。
+function normalizePluginModule(module, index) {
+  const id = String(module?.id || module?.name || `module-${index}`).trim()
+  return {
+    id,
+    title: String(module?.title || module?.displayName || id).trim(),
+    orderIndex: Number.isFinite(Number(module?.orderIndex)) ? Number(module.orderIndex) : index,
+  }
+}
+
+// 规范化插件清单：把可选字段压平成可写入数据库的结构。
+function normalizePluginManifest(manifest, folderName, sourcePath, orderIndex) {
+  const pluginKey = String(manifest?.name || folderName || "").trim()
+  const displayName = String(manifest?.displayName || pluginKey || folderName || "plugin").trim()
+  const version = String(manifest?.version || "1.0.0").trim() || "1.0.0"
+  const description = typeof manifest?.description === "string" && manifest.description.trim()
+    ? manifest.description.trim()
+    : null
+  const uiMode = PLUGIN_UI_MODES.has(manifest?.uiMode) ? manifest.uiMode : "panel"
+  const permissions = manifest?.permissions && typeof manifest.permissions === "object"
+    ? {
+        read: Array.isArray(manifest.permissions.read)
+          ? manifest.permissions.read.map((item) => String(item).trim()).filter(Boolean)
+          : [],
+        write: Array.isArray(manifest.permissions.write)
+          ? manifest.permissions.write.map((item) => String(item).trim()).filter(Boolean)
+          : [],
+      }
+    : { read: [], write: [] }
+  const modules = Array.isArray(manifest?.modules)
+    ? manifest.modules.map((module, index) => normalizePluginModule(module, index)).filter((module) => module.id)
+    : []
+
+  return {
+    name: pluginKey,
+    displayName,
+    version,
+    description,
+    sourcePath,
+    uiMode,
+    orderIndex,
+    permissions,
+    modules,
+  }
 }
 
 // 绝对路径 => 相对 vault 路径。
@@ -433,6 +494,173 @@ function ensureProjectSchema(db) {
   `)
 }
 
+// 确保插件表存在：记录插件元数据、排序、启用状态和设置 JSON。
+function ensurePluginSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS plugins (
+      id TEXT PRIMARY KEY,
+      plugin_key TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      description TEXT,
+      version TEXT NOT NULL DEFAULT '1.0.0',
+      source_path TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'local',
+      ui_mode TEXT NOT NULL DEFAULT 'panel'
+        CHECK (ui_mode IN ('editor', 'display', 'panel')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      is_installed INTEGER NOT NULL DEFAULT 1,
+      order_index INTEGER NOT NULL DEFAULT 0,
+      manifest_json TEXT NOT NULL DEFAULT '{}',
+      permissions_json TEXT NOT NULL DEFAULT '{}',
+      settings_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_plugins_enabled_order
+    ON plugins(is_installed DESC, enabled DESC, order_index ASC, updated_at DESC);
+  `)
+}
+
+// 读取插件清单：扫描根目录 plugins/ 下的每个插件包。
+function scanPluginManifests() {
+  const pluginsPath = ensurePluginsRootPath()
+  if (!fs.existsSync(pluginsPath)) {
+    return []
+  }
+
+  const entries = fs.readdirSync(pluginsPath, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
+
+  const results = []
+
+  for (const [index, entry] of entries.entries()) {
+    const manifestPath = path.join(pluginsPath, entry.name, ".codex-plugin", "plugin.json")
+    if (!fs.existsSync(manifestPath)) continue
+
+    try {
+      const raw = fs.readFileSync(manifestPath, "utf8")
+      const parsed = JSON.parse(raw)
+      const manifest = normalizePluginManifest(parsed, entry.name, `./plugins/${entry.name}`, index)
+      if (!manifest.name) continue
+      results.push({
+        folderName: entry.name,
+        manifest,
+        manifestJson: JSON.stringify(parsed),
+      })
+    } catch (error) {
+      console.warn("[hora] invalid plugin manifest:", manifestPath, error)
+    }
+  }
+
+  return results
+}
+
+// 读取插件清单文件：导入时先校验 manifest，再决定目标目录名。
+function readPluginManifestFromDirectory(sourceDir) {
+  const manifestPath = path.join(sourceDir, ".codex-plugin", "plugin.json")
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error("插件包缺少 .codex-plugin/plugin.json")
+  }
+
+  const raw = fs.readFileSync(manifestPath, "utf8")
+  const parsed = JSON.parse(raw)
+  const folderName = path.basename(sourceDir)
+  return normalizePluginManifest(parsed, folderName, `./plugins/${folderName}`, 0)
+}
+
+// 导入插件包：复制整个目录到运行时插件根目录。
+function importPluginPackage(sourceDir) {
+  const manifest = readPluginManifestFromDirectory(sourceDir)
+  if (!manifest.name) {
+    throw new Error("插件清单缺少 name")
+  }
+
+  const pluginsPath = ensurePluginsRootPath()
+  const targetDir = path.join(pluginsPath, manifest.name)
+
+  fs.rmSync(targetDir, { recursive: true, force: true })
+  fs.cpSync(sourceDir, targetDir, { recursive: true })
+  return targetDir
+}
+
+// 把磁盘里的插件清单同步到数据库。
+function syncPluginsFromFilesystem(db = dbInstance) {
+  if (!db) {
+    return []
+  }
+
+  const scanned = scanPluginManifests()
+  const existingRows = db.prepare(`
+    SELECT
+      id,
+      plugin_key AS pluginKey,
+      enabled,
+      is_installed AS isInstalled,
+      order_index AS orderIndex,
+      settings_json AS settingsJson,
+      created_at AS createdAt
+    FROM plugins
+  `).all()
+  const existingMap = new Map(existingRows.map((row) => [row.pluginKey, row]))
+  const now = new Date().toISOString()
+
+  const upsertStmt = db.prepare(`
+    INSERT INTO plugins (
+      id, plugin_key, display_name, description, version, source_path, source_type, ui_mode,
+      enabled, is_installed, order_index, manifest_json, permissions_json, settings_json,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'local', ?, ?, 1, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(plugin_key) DO UPDATE SET
+      display_name = excluded.display_name,
+      description = excluded.description,
+      version = excluded.version,
+      source_path = excluded.source_path,
+      source_type = excluded.source_type,
+      ui_mode = excluded.ui_mode,
+      is_installed = 1,
+      manifest_json = excluded.manifest_json,
+      permissions_json = excluded.permissions_json,
+      updated_at = excluded.updated_at
+  `)
+
+  const txn = db.transaction(() => {
+    for (const item of scanned) {
+      const existing = existingMap.get(item.manifest.name)
+      const pluginId = existing?.id || buildEntityId("plugin")
+      const settingsJson = existing?.settingsJson || "{}"
+      const orderIndex = existing?.orderIndex ?? item.manifest.orderIndex
+      const enabled = existing?.enabled ?? 1
+      upsertStmt.run(
+        pluginId,
+        item.manifest.name,
+        item.manifest.displayName,
+        item.manifest.description,
+        item.manifest.version,
+        item.manifest.sourcePath,
+        item.manifest.uiMode,
+        enabled,
+        orderIndex,
+        item.manifestJson,
+        JSON.stringify(item.manifest.permissions),
+        settingsJson,
+        existing?.createdAt || now,
+        now,
+      )
+    }
+
+    db.prepare(`
+      UPDATE plugins
+      SET is_installed = 0, updated_at = ?
+      WHERE plugin_key NOT IN (${scanned.length > 0 ? scanned.map(() => "?").join(", ") : "''"})
+    `).run(now, ...scanned.map((item) => item.manifest.name))
+  })
+
+  txn()
+  return listPlugins()
+}
+
 // 递归扫描 notes：收集文件夹与受支持文件。
 function scanNotesTree() {
   const notesPath = getNotesPath()
@@ -662,6 +890,7 @@ function initDatabase() {
 
   ensureNoteSchema(db)
   ensureProjectSchema(db)
+  ensurePluginSchema(db)
   ensureDefaultWelcomeFile()
 
   return db
@@ -672,6 +901,7 @@ function getDb() {
   if (dbInstance) return dbInstance
   dbInstance = initDatabase()
   syncVaultToDatabase()
+  syncPluginsFromFilesystem(dbInstance)
   return dbInstance
 }
 
@@ -1168,6 +1398,180 @@ function reorderTasks(input) {
   return true
 }
 
+// 把数据库行转成前端可直接使用的插件记录。
+function hydratePluginRow(row) {
+  if (!row) return null
+
+  let manifest = null
+  try {
+    manifest = JSON.parse(row.manifestJson || "{}")
+  } catch {
+    manifest = {}
+  }
+
+  const normalizedManifest = normalizePluginManifest(
+    manifest,
+    row.pluginKey,
+    row.sourcePath,
+    row.orderIndex,
+  )
+
+  return {
+    id: row.id,
+    pluginKey: row.pluginKey,
+    displayName: row.displayName,
+    description: row.description,
+    version: row.version,
+    sourcePath: row.sourcePath,
+    sourceType: row.sourceType,
+    uiMode: row.uiMode,
+    enabled: row.enabled,
+    isInstalled: row.isInstalled,
+    orderIndex: row.orderIndex,
+    manifestJson: row.manifestJson,
+    permissionsJson: row.permissionsJson,
+    settingsJson: row.settingsJson,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    manifest: normalizedManifest,
+  }
+}
+
+// 对外：查询全部插件清单。
+function listPlugins() {
+  const db = getDb()
+  const rows = db.prepare(`
+    SELECT
+      id,
+      plugin_key AS pluginKey,
+      display_name AS displayName,
+      description,
+      version,
+      source_path AS sourcePath,
+      source_type AS sourceType,
+      ui_mode AS uiMode,
+      enabled,
+      is_installed AS isInstalled,
+      order_index AS orderIndex,
+      manifest_json AS manifestJson,
+      permissions_json AS permissionsJson,
+      settings_json AS settingsJson,
+      created_at AS createdAt,
+      updated_at AS updatedAt
+    FROM plugins
+    ORDER BY is_installed DESC, enabled DESC, order_index ASC, updated_at DESC
+  `).all()
+  return rows.map((row) => hydratePluginRow(row))
+}
+
+// 对外：按 pluginKey 获取单个插件。
+function getPluginByKey(pluginKey) {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT
+      id,
+      plugin_key AS pluginKey,
+      display_name AS displayName,
+      description,
+      version,
+      source_path AS sourcePath,
+      source_type AS sourceType,
+      ui_mode AS uiMode,
+      enabled,
+      is_installed AS isInstalled,
+      order_index AS orderIndex,
+      manifest_json AS manifestJson,
+      permissions_json AS permissionsJson,
+      settings_json AS settingsJson,
+      created_at AS createdAt,
+      updated_at AS updatedAt
+    FROM plugins
+    WHERE plugin_key = ?
+    LIMIT 1
+  `).get(pluginKey)
+  return hydratePluginRow(row)
+}
+
+// 对外：刷新插件目录并重新同步数据库。
+function refreshPlugins() {
+  syncPluginsFromFilesystem(getDb())
+  return listPlugins()
+}
+
+// 对外：更新插件的展示信息和模式。
+function updatePlugin(input) {
+  const db = getDb()
+  const current = getPluginByKey(input.pluginKey)
+  if (!current) throw new Error("插件不存在")
+
+  const now = new Date().toISOString()
+  const stmt = db.prepare(`
+    UPDATE plugins
+    SET display_name = ?, description = ?, version = ?, ui_mode = ?, updated_at = ?
+    WHERE plugin_key = ?
+  `)
+  stmt.run(
+    input.displayName ?? current.displayName,
+    input.description ?? current.description,
+    input.version ?? current.version,
+    PLUGIN_UI_MODES.has(input.uiMode) ? input.uiMode : current.uiMode,
+    now,
+    input.pluginKey,
+  )
+
+  if (typeof input.settingsJson === "string") {
+    db.prepare(`
+      UPDATE plugins
+      SET settings_json = ?, updated_at = ?
+      WHERE plugin_key = ?
+    `).run(input.settingsJson, now, input.pluginKey)
+  }
+
+  return getPluginByKey(input.pluginKey)
+}
+
+// 对外：切换插件启用状态。
+function setPluginEnabled(pluginKey, enabled) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  db.prepare(`
+    UPDATE plugins
+    SET enabled = ?, updated_at = ?
+    WHERE plugin_key = ?
+  `).run(enabled ? 1 : 0, now, pluginKey)
+  return getPluginByKey(pluginKey)
+}
+
+// 对外：按顺序重排插件。
+function reorderPlugins(input) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  const stmt = db.prepare(`
+    UPDATE plugins
+    SET order_index = ?, updated_at = ?
+    WHERE plugin_key = ?
+  `)
+  const txn = db.transaction(() => {
+    for (const item of input.items || []) {
+      stmt.run(item.orderIndex, now, item.pluginKey)
+    }
+  })
+  txn()
+  return true
+}
+
+// 对外：只更新插件设置 JSON。
+function updatePluginSettings(input) {
+  const db = getDb()
+  const now = new Date().toISOString()
+  db.prepare(`
+    UPDATE plugins
+    SET settings_json = ?, updated_at = ?
+    WHERE plugin_key = ?
+  `).run(input.settingsJson, now, input.pluginKey)
+  return getPluginByKey(input.pluginKey)
+}
+
 // 对外：按 ID 获取项目。
 function getProjectById(projectId) {
   const db = getDb()
@@ -1623,6 +2027,7 @@ module.exports = {
   getHoraDataPath,
   getVaultPath,
   getNotesPath,
+  getPluginsRootPath,
   syncVaultToDatabase,
   startNotesWatcher,
   listProjects,
@@ -1642,6 +2047,14 @@ module.exports = {
   updateTaskStatus,
   deleteTask,
   reorderTasks,
+  listPlugins,
+  getPluginByKey,
+  refreshPlugins,
+  updatePlugin,
+  setPluginEnabled,
+  reorderPlugins,
+  updatePluginSettings,
+  importPluginPackage,
   listNotesByProject,
   listNotesByRequirement,
   listNotesByTask,
