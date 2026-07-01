@@ -5,6 +5,7 @@ const crypto = require("node:crypto")
 const { app } = require("electron")
 const Database = require("better-sqlite3")
 const chokidar = require("chokidar")
+const space = require("./space.cjs")
 
 let dbInstance = null
 let notesWatcher = null
@@ -14,10 +15,7 @@ const LOCAL_OWNER = "local_owner"
 
 // 统一路径：Hora 数据目录。
 function getHoraDataPath() {
-  if (process.platform === "darwin") {
-    return path.join(app.getPath("home"), "Library", "hora-notes", "hora-data")
-  }
-  return path.join(app.getPath("userData"), "hora-data")
+  return space.getCurrentSpaceRootPath()
 }
 
 // 统一路径：Vault 根目录。
@@ -45,6 +43,27 @@ function ensurePluginsRootPath() {
   const pluginsPath = getPluginsRootPath()
   fs.mkdirSync(pluginsPath, { recursive: true })
   return pluginsPath
+}
+
+// 重置运行时：切换空间后关闭数据库和监听器，重新按新路径初始化。
+function resetRuntime() {
+  if (notesWatcher) {
+    try {
+      notesWatcher.close()
+    } catch {
+      // 关闭失败时不阻断空间切换，后续会重新创建监听。
+    }
+    notesWatcher = null
+  }
+
+  if (dbInstance) {
+    try {
+      dbInstance.close()
+    } catch {
+      // 数据库关闭失败时忽略，确保后续能继续重建新空间实例。
+    }
+    dbInstance = null
+  }
 }
 
 // 解析初始化 SQL 路径：兼容开发与打包。
@@ -876,6 +895,7 @@ function initDatabase() {
   const sqlPath = resolveSqlPath()
 
   const isFirstInit = !fs.existsSync(dbPath)
+  space.ensureSpaceLayout(getHoraDataPath())
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   fs.mkdirSync(getVaultPath(), { recursive: true })
   fs.mkdirSync(getNotesPath(), { recursive: true })
@@ -2028,6 +2048,7 @@ module.exports = {
   getVaultPath,
   getNotesPath,
   getPluginsRootPath,
+  resetRuntime,
   syncVaultToDatabase,
   startNotesWatcher,
   listProjects,

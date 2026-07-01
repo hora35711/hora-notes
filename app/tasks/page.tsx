@@ -8,6 +8,7 @@ import { Check, CheckCircle2, ChevronDown, Circle, Filter, Pencil, RotateCcw, X 
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { DatePickerField } from "@/components/date-picker-field"
 import {
   DropdownMenu,
@@ -382,10 +383,20 @@ export default function TasksPage() {
       </section>
 
       {tasks.length === 0 ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          {(filters.statuses || []).includes("done") ? <CheckCircle2 className="size-4" /> : <Circle className="size-4" />}
-          暂无任务。
-        </div>
+        <Empty className="mt-4 rounded-xl border border-dashed bg-card py-10">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              {(filters.statuses || []).includes("done") ? <CheckCircle2 className="size-4" /> : <Circle className="size-4" />}
+            </EmptyMedia>
+            <EmptyTitle>暂无任务</EmptyTitle>
+            <EmptyDescription>可以先创建任务，或者切换筛选条件看看其他状态。</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent className="flex-row justify-center">
+            <Button type="button" variant="outline" onClick={() => void clearFilters()}>
+              清除筛选
+            </Button>
+          </EmptyContent>
+        </Empty>
       ) : null}
     </main>
   )

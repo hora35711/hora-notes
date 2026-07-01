@@ -45,6 +45,18 @@ contextBridge.exposeInMainWorld("horaDB", {
   importPluginPackage: () => ipcRenderer.invoke("db:plugins:import"),
   restartApp: () => ipcRenderer.invoke("app:restart"),
 
+  // 空间管理：首次引导、切换、重命名和路径迁移都走这里。
+  getSpaceBootstrapState: () => ipcRenderer.invoke("db:spaces:bootstrapState"),
+  listSpaces: () => ipcRenderer.invoke("db:spaces:list"),
+  getCurrentSpace: () => ipcRenderer.invoke("db:spaces:getCurrent"),
+  pickSpaceDirectory: (input) => ipcRenderer.invoke("db:spaces:pickDirectory", input),
+  createSpace: (input) => ipcRenderer.invoke("db:spaces:create", input),
+  switchSpace: (spaceId) => ipcRenderer.invoke("db:spaces:switch", spaceId),
+  renameSpace: (input) => ipcRenderer.invoke("db:spaces:rename", input),
+  deleteSpace: (spaceId) => ipcRenderer.invoke("db:spaces:delete", spaceId),
+  migrateCurrentSpace: (input) => ipcRenderer.invoke("db:spaces:migrateCurrent", input),
+  reloadSpaceRuntime: () => ipcRenderer.invoke("db:spaces:reload"),
+
   listNoteNodes: () => ipcRenderer.invoke("db:notes:list"),
   getNote: (noteId) => ipcRenderer.invoke("db:notes:get", noteId),
   readNoteContent: (noteId) => ipcRenderer.invoke("db:notes:read", noteId),
@@ -62,6 +74,13 @@ contextBridge.exposeInMainWorld("horaDB", {
     ipcRenderer.on("notes-changed", listener)
     return () => {
       ipcRenderer.removeListener("notes-changed", listener)
+    }
+  },
+  onSpacesChanged: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on("spaces-changed", listener)
+    return () => {
+      ipcRenderer.removeListener("spaces-changed", listener)
     }
   },
 })

@@ -19,6 +19,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,7 +38,18 @@ import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { ShimmerDemo } from "@/components/ui/shimmer"
 import { ArrowDown, ArrowUp, FolderUp, RefreshCw, Settings2, SlidersHorizontal } from "lucide-react"
+import { SpaceDialog } from "@/components/space-dialog"
+
+import {
+  getCurrentSpace,
+  getSpaceBootstrapState,
+  listSpaces,
+  createSpace,
+  migrateCurrentSpace,
+  type SpaceRecord,
+} from "@/lib/hora-db"
 
 type SettingsSection = "general" | "language" | "location" | "repository" | "plugins" | "extensions"
 
@@ -133,6 +145,11 @@ export default function SettingsPage() {
   const [savingKey, setSavingKey] = React.useState<string | null>(null)
   const [editorOpen, setEditorOpen] = React.useState(false)
   const [restartOpen, setRestartOpen] = React.useState(false)
+  const [spaceRestartOpen, setSpaceRestartOpen] = React.useState(false)
+  const [spaceDialogOpen, setSpaceDialogOpen] = React.useState(false)
+  const [spaceDialogMode, setSpaceDialogMode] = React.useState<"create" | "migrate">("create")
+  const [currentSpace, setCurrentSpace] = React.useState<SpaceRecord | null>(null)
+  const [spaceList, setSpaceList] = React.useState<SpaceRecord[]>([])
   const [storagePath, setStoragePath] = React.useState("")
   const [draft, setDraft] = React.useState<PluginDraft>(DEFAULT_DRAFT)
 
@@ -146,11 +163,38 @@ export default function SettingsPage() {
     }
   }, [])
 
+  const loadSpaceState = React.useCallback(async () => {
+    // 空间信息来自账号级注册表，设置页只展示当前空间并提供迁移入口。
+    const [bootstrapState, current, spaces] = await Promise.all([
+      getSpaceBootstrapState(),
+      getCurrentSpace(),
+      listSpaces(),
+    ])
+
+    setCurrentSpace(current || bootstrapState.currentSpace)
+    setSpaceList(spaces.length > 0 ? spaces : bootstrapState.spaces)
+    setSpaceDialogMode("create")
+    setSpaceDialogOpen(bootstrapState.bootstrapRequired || !current)
+  }, [])
+
   React.useEffect(() => {
     // 首次进入设置页时同时加载插件列表和插件存放路径。
     void loadPlugins()
     void getPluginRootPath().then((path) => setStoragePath(path))
+    void loadSpaceState()
   }, [loadPlugins])
+
+  React.useEffect(() => {
+    // 空间发生切换或迁移时刷新当前空间信息，避免设置页显示旧路径。
+    const unsubscribeSpaces = window.horaDB?.onSpacesChanged?.(() => {
+      void loadSpaceState()
+      void getPluginRootPath().then((path) => setStoragePath(path))
+    })
+
+    return () => {
+      unsubscribeSpaces?.()
+    }
+  }, [loadSpaceState])
 
   const stats = React.useMemo(() => {
     return {
@@ -188,6 +232,36 @@ export default function SettingsPage() {
     } finally {
       setSavingKey(null)
     }
+  }
+
+  async function handleMigrateSpace({ rootPath }: { rootPath: string }) {
+    // 迁移当前空间时只接受目标路径，名称沿用现有空间名，避免路径变更时误改结构名。
+    await migrateCurrentSpace({ rootPath })
+    await loadSpaceState()
+    await getPluginRootPath().then((path) => setStoragePath(path))
+    setSpaceRestartOpen(true)
+  }
+
+  function openCreateSpaceDialog() {
+    setSpaceDialogMode("create")
+    setSpaceDialogOpen(true)
+  }
+
+  function openMigrateSpaceDialog() {
+    setSpaceDialogMode("migrate")
+    setSpaceDialogOpen(true)
+  }
+
+  async function handleSpaceSubmit(input: { name: string; rootPath: string }) {
+    // 根据模式区分创建与迁移，避免在迁移场景里误创建新空间记录。
+    if (spaceDialogMode === "migrate") {
+      await handleMigrateSpace(input)
+      return
+    }
+
+    await createSpace(input)
+    await loadSpaceState()
+    await getPluginRootPath().then((path) => setStoragePath(path))
   }
 
   async function handleToggleEnabled(plugin: PluginRecord) {
@@ -261,6 +335,8 @@ export default function SettingsPage() {
   const storagePathLabel = storagePath || "正在加载插件存放路径..."
   const truncatedStoragePath =
     storagePathLabel.length > 34 ? `${storagePathLabel.slice(0, 18)}…${storagePathLabel.slice(-14)}` : storagePathLabel
+  const currentSpaceName = currentSpace?.name || "默认空间"
+  const currentSpacePath = currentSpace?.rootPath || "尚未创建空间"
 
   return (
     <TooltipProvider>
@@ -273,6 +349,33 @@ export default function SettingsPage() {
         <p className="max-w-3xl text-sm text-muted-foreground">
           这里会作为所有全局设置的入口。
         </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>当前空间</CardDescription>
+              <CardTitle className="text-base">{currentSpaceName}</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0 text-sm text-muted-foreground">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <p className="truncate">{currentSpacePath}</p>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[420px] break-all">
+                  {currentSpacePath}
+                </TooltipContent>
+              </Tooltip>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>空间数量</CardDescription>
+              <CardTitle className="text-base">{spaceList.length}</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0 text-sm text-muted-foreground">
+              {spaceList.length > 0 ? "左上角可以直接切换空间，设置页也会同步刷新。" : "首次启动会要求创建或选择一个空间目录。"}
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -371,7 +474,7 @@ export default function SettingsPage() {
                   <div>
                     <CardTitle>插件管理</CardTitle>
                     <CardDescription>
-                      上传后会自动复制到运行时插件目录。
+                      上传后会自动复制到当前空间的插件目录。
                     </CardDescription>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -388,7 +491,7 @@ export default function SettingsPage() {
 
                 <CardContent className="space-y-4">
                   <div className="rounded-lg border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                    插件会被复制到{" "}
+                    插件会被复制到当前空间下的{" "}
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span className="cursor-default font-medium text-foreground">{truncatedStoragePath}</span>
@@ -403,18 +506,35 @@ export default function SettingsPage() {
                   <Separator />
 
                   {loading ? (
-                    <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="grid gap-3 lg:grid-cols-2">
                       {[0, 1].map((item) => (
-                        <div key={item} className="h-40 animate-pulse rounded-xl border bg-muted/40" />
+                        <Card key={item} className="p-4">
+                          <div className="space-y-3">
+                            <ShimmerDemo className="h-4 w-40" />
+                            <ShimmerDemo className="h-4 w-3/5" />
+                            <ShimmerDemo className="h-20 w-full rounded-xl" />
+                          </div>
+                        </Card>
                       ))}
                     </div>
                   ) : plugins.length === 0 ? (
-                    <div className="rounded-xl border border-dashed p-8 text-center">
-                      <p className="text-sm font-medium">还没有导入任何插件</p>
-                      <p className="mt-2 text-sm text-muted-foreground">
-                        先点击“导入插件包”，把插件文件夹复制到运行时目录。
-                      </p>
-                    </div>
+                    <Empty className="rounded-xl border border-dashed py-10">
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon">
+                          <FolderUp className="size-4" />
+                        </EmptyMedia>
+                        <EmptyTitle>还没有导入任何插件</EmptyTitle>
+                        <EmptyDescription>
+                          先点击“导入插件包”，把插件文件夹复制到当前空间目录下。
+                        </EmptyDescription>
+                      </EmptyHeader>
+                      <EmptyContent className="flex-row justify-center">
+                        <Button onClick={() => void handleImportPlugin()} disabled={savingKey === "import"}>
+                          <FolderUp className="mr-2 size-4" />
+                          导入插件包
+                        </Button>
+                      </EmptyContent>
+                    </Empty>
                   ) : (
                     <div className="grid gap-4 lg:grid-cols-2">
                       {plugins.map((plugin, index) => {
@@ -562,22 +682,31 @@ export default function SettingsPage() {
               </CardHeader>
               <CardContent className="grid gap-4">
                 <div className="grid gap-2">
-                  <Label>插件存放路径</Label>
+                  <Label>当前空间路径</Label>
                   <div className="rounded-lg border bg-muted/20 px-3 py-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <p className="truncate text-sm text-foreground">{storagePathLabel}</p>
+                        <p className="truncate text-sm text-foreground">{currentSpacePath}</p>
                       </TooltipTrigger>
                       <TooltipContent side="bottom" className="max-w-[420px] break-all">
-                        {storagePathLabel}
+                        {currentSpacePath}
                       </TooltipContent>
                     </Tooltip>
                   </div>
-                  <p className="text-xs text-muted-foreground">默认会放到用户数据目录下，适合打包后的本地安装版本。</p>
+                  <p className="text-xs text-muted-foreground">这里会承载当前空间的数据、数据库和插件目录，账号配置不随空间切换而移动。</p>
                 </div>
                 <div className="grid gap-2">
-                  <Label>数据目录</Label>
+                  <Label>插件存放路径</Label>
                   <Input value={storagePathLabel} readOnly />
+                  <p className="text-xs text-muted-foreground">插件仍然复制到当前空间的 plugins 目录，导入后建议重启一次。</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={() => void openMigrateSpaceDialog()}>
+                    更改当前空间路径
+                  </Button>
+                  <Button type="button" onClick={() => void openCreateSpaceDialog()}>
+                    创建或切换空间
+                  </Button>
                 </div>
               </CardContent>
             </Card>
@@ -727,6 +856,36 @@ export default function SettingsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={spaceRestartOpen} onOpenChange={setSpaceRestartOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>空间路径已更新</AlertDialogTitle>
+            <AlertDialogDescription>当前空间数据已移动到新路径，建议立刻重启应用以确保所有页面和插件都指向新目录。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>稍后重启</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void restartApp()}>立即重启</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <SpaceDialog
+        open={spaceDialogOpen}
+        mode={spaceDialogMode}
+        title={spaceDialogMode === "migrate" ? "更改当前空间路径" : "创建空间"}
+        description={
+          spaceDialogMode === "migrate"
+            ? "选择新的空间目录后，会自动迁移当前空间的全部数据，并更新数据库路径。"
+            : "选择空间目录并填写空间名称，创建后会把数据、数据库和插件都放到这个空间下。"
+        }
+        submitLabel={spaceDialogMode === "migrate" ? "迁移空间" : "创建并进入"}
+        defaultName={spaceDialogMode === "migrate" ? currentSpaceName : ""}
+        defaultPath={spaceDialogMode === "migrate" ? (currentSpacePath === "尚未创建空间" ? "" : currentSpacePath) : ""}
+        lockName={spaceDialogMode === "migrate"}
+        onOpenChange={setSpaceDialogOpen}
+        onSubmit={handleSpaceSubmit}
+      />
       </div>
     </TooltipProvider>
   )

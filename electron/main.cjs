@@ -1,16 +1,47 @@
 // Electron 主进程：启动窗口、注册 IPC，并桥接笔记变更事件。
 const path = require("node:path")
 const fs = require("node:fs")
+const http = require("node:http")
+const { pathToFileURL } = require("node:url")
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron")
 const db = require("./db.cjs")
+const space = require("./space.cjs")
 
 let mainWindow = null
+const RENDERER_PORT = Number(process.env.HORA_RENDERER_PORT || 3000)
+
+// 根据运行环境选择真实文件路径，避免把图标路径指向 asar 内部。
+function getAppIconPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "icon", "hora_space_icon.png")
+  }
+
+  return path.join(app.getAppPath(), "icon", "hora_space_icon.png")
+}
 
 // 广播笔记变更：通知所有渲染进程刷新侧边栏目录。
 function notifyNotesChanged() {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send("notes-changed")
   }
+}
+
+// 广播空间变化：左上角切换器、设置页和首次引导会一起刷新。
+function notifySpacesChanged() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("spaces-changed")
+  }
+}
+
+// 切换空间后重建 DB 和监听器，避免旧路径继续占用。
+function reloadCurrentSpaceRuntime() {
+  db.resetRuntime()
+  db.syncVaultToDatabase()
+  db.startNotesWatcher(() => {
+    notifyNotesChanged()
+  })
+  notifySpacesChanged()
+  notifyNotesChanged()
 }
 
 // 注册 IPC：渲染层通过 preload 调用本地数据库方法。
@@ -114,6 +145,53 @@ function registerDbIpc() {
     return true
   })
 
+  // 空间管理：账号级注册表，和空间数据路径分开存放。
+  ipcMain.handle("db:spaces:bootstrapState", () => space.getSpaceBootstrapState())
+  ipcMain.handle("db:spaces:list", () => space.listSpaces())
+  ipcMain.handle("db:spaces:getCurrent", () => space.getCurrentSpace())
+  ipcMain.handle("db:spaces:pickDirectory", async (_event, input) => {
+    const result = await dialog.showOpenDialog({
+      title: "选择空间目录",
+      defaultPath: input?.defaultPath || app.getPath("documents"),
+      properties: ["openDirectory", "createDirectory"],
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true, filePath: "" }
+    }
+
+    return { canceled: false, filePath: result.filePaths[0] }
+  })
+  ipcMain.handle("db:spaces:create", (_event, input) => {
+    const result = space.createSpace(input)
+    reloadCurrentSpaceRuntime()
+    return result
+  })
+  ipcMain.handle("db:spaces:switch", (_event, spaceId) => {
+    const result = space.switchSpace(spaceId)
+    reloadCurrentSpaceRuntime()
+    return result
+  })
+  ipcMain.handle("db:spaces:rename", (_event, input) => {
+    const result = space.renameSpace(input.spaceId, input.name)
+    notifySpacesChanged()
+    return result
+  })
+  ipcMain.handle("db:spaces:delete", (_event, spaceId) => {
+    const result = space.deleteSpace(spaceId)
+    reloadCurrentSpaceRuntime()
+    return result
+  })
+  ipcMain.handle("db:spaces:migrateCurrent", (_event, input) => {
+    const result = space.moveCurrentSpaceRootPath(input.rootPath)
+    reloadCurrentSpaceRuntime()
+    return result
+  })
+  ipcMain.handle("db:spaces:reload", () => {
+    reloadCurrentSpaceRuntime()
+    return space.getSpaceBootstrapState()
+  })
+
   ipcMain.handle("db:noteLinks:listByProject", (_event, projectId) => db.listNotesByProject(projectId))
   ipcMain.handle("db:noteLinks:listByRequirement", (_event, requirementId) => db.listNotesByRequirement(requirementId))
   ipcMain.handle("db:noteLinks:listByTask", (_event, taskId) => db.listNotesByTask(taskId))
@@ -151,12 +229,16 @@ function registerDbIpc() {
 }
 
 // 创建窗口：开发态加载 Next dev server，打包态加载本地占位页面。
-function createMainWindow() {
+function createMainWindow(rendererUrl) {
   const win = new BrowserWindow({
     width: 1320,
     height: 860,
     minWidth: 1080,
     minHeight: 720,
+    // 先隐藏，等首帧渲染完成再显示，避免 mac 上出现“只有菜单栏、窗口没露出来”的错觉。
+    show: false,
+    // 统一使用 Hora Space 品牌图标，确保窗口标题栏、任务栏和快捷方式视觉一致。
+    icon: getAppIconPath(),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -172,12 +254,80 @@ function createMainWindow() {
     // 开发模式
     win.loadURL(devUrl)
   } else {
-    // ✅ 生产模式（关键修改）
-    win.loadURL("http://localhost:3000")
+    // 生产模式：优先加载由打包产物启动的本地 Next 服务。
+    win.loadURL(rendererUrl)
   }
+
+  // 页面准备完成后再展示，减少白屏和后台窗口不显形的问题。
+  win.once("ready-to-show", () => {
+    if (!win.isDestroyed()) {
+      win.show()
+      win.focus()
+    }
+  })
+
+  // 记录渲染层加载情况，便于区分“窗口没出来”和“页面加载失败”。
+  win.webContents.on("did-finish-load", () => {
+    console.log("[hora] renderer loaded:", win.webContents.getURL())
+  })
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    console.error("[hora] renderer failed to load:", {
+      errorCode,
+      errorDescription,
+      validatedURL,
+    })
+  })
+  win.webContents.on("render-process-gone", (_event, details) => {
+    console.error("[hora] renderer process gone:", details)
+  })
+  win.on("unresponsive", () => {
+    console.error("[hora] main window became unresponsive")
+  })
 }
 
-app.whenReady().then(() => {
+// 生产态启动 Next standalone 服务，并等待端口可用。
+async function startPackagedRendererServer() {
+  // standalone 需要作为真实目录存在，不能被塞进 asar。
+  const serverPath = path.join(process.resourcesPath, "standalone", "server.js")
+  if (!fs.existsSync(serverPath)) {
+    throw new Error(`未找到生产渲染器入口：${serverPath}`)
+  }
+
+  // 直接在 Electron 主进程内加载 standalone 服务，避免额外 Node 图标和第二个进程。
+  process.env.NODE_ENV = "production"
+  process.env.HOSTNAME = "127.0.0.1"
+  process.env.PORT = String(RENDERER_PORT)
+
+  await import(pathToFileURL(serverPath).href)
+
+  return `http://127.0.0.1:${RENDERER_PORT}`
+}
+
+// 等待本地服务可用：避免窗口过早打开导致空白页。
+function waitForServer(url, timeoutMs = 30000) {
+  const startedAt = Date.now()
+
+  return new Promise((resolve, reject) => {
+    const probe = () => {
+      const request = http.get(url, (response) => {
+        response.resume()
+        resolve(true)
+      })
+
+      request.on("error", (error) => {
+        if (Date.now() - startedAt > timeoutMs) {
+          reject(error)
+          return
+        }
+        setTimeout(probe, 300)
+      })
+    }
+
+    probe()
+  })
+}
+
+app.whenReady().then(async () => {
   // 启动后先做一次同步，保证 UI 初次读取就是最新目录。
   db.syncVaultToDatabase()
 
@@ -187,13 +337,44 @@ app.whenReady().then(() => {
   })
 
   registerDbIpc()
-  createMainWindow()
+
+  let rendererUrl = process.env.ELECTRON_RENDERER_URL || "http://localhost:3000"
+  if (app.isPackaged) {
+    try {
+      rendererUrl = await startPackagedRendererServer()
+    } catch (error) {
+      console.error("启动生产渲染服务失败:", error)
+      app.quit()
+      return
+    }
+  }
+
+  if (app.isPackaged) {
+    waitForServer(rendererUrl)
+      .then(() => {
+        createMainWindow(rendererUrl)
+      })
+      .catch((error) => {
+        console.error("启动生产渲染服务失败:", error)
+        app.quit()
+      })
+  } else {
+    createMainWindow(rendererUrl)
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow()
+      createMainWindow(rendererUrl)
     }
   })
+})
+
+process.on("uncaughtException", (error) => {
+  console.error("[hora] uncaughtException:", error)
+})
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[hora] unhandledRejection:", reason)
 })
 
 app.on("window-all-closed", () => {

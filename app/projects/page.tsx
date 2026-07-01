@@ -21,6 +21,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { DatePickerField } from "@/components/date-picker-field"
 import {
   Dialog,
@@ -49,6 +50,7 @@ import {
   saveProjectsDetailSnapshot,
   saveProjectsListSnapshot,
 } from "@/lib/projects-navigation-state"
+import { ShimmerBlock } from "@/components/ui/shimmer"
 import {
   getPriorityToneClassName,
   getStatusToneClassName,
@@ -273,7 +275,21 @@ export default function ProjectsPage() {
 
       {error ? <p className="mb-4 text-sm text-rose-600">{error}</p> : null}
 
-      {viewMode === "list" ? (
+      {loading ? (
+        <section className="rounded-xl border bg-card p-4 shadow-sm">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <Card key={index} className="p-4">
+                <div className="space-y-3">
+                  <ShimmerBlock className="h-4 w-2/3" />
+                  <ShimmerBlock className="h-4 w-1/2" />
+                  <ShimmerBlock className="h-24 w-full" />
+                </div>
+              </Card>
+            ))}
+          </div>
+        </section>
+      ) : viewMode === "list" ? (
         <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
           <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.6fr_0.5fr_1fr_0.9fr] border-b bg-muted/50 px-4 py-2 text-xs font-medium text-muted-foreground">
             <span>项目名称</span>
@@ -420,7 +436,20 @@ export default function ProjectsPage() {
         </section>
       )}
 
-      {!loading && sortedProjects.length === 0 ? <p className="mt-6 text-sm text-muted-foreground">暂无项目。</p> : null}
+      {!loading && sortedProjects.length === 0 ? (
+        <Empty className="mt-6 rounded-xl border border-dashed bg-card py-10">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Plus className="size-4" />
+            </EmptyMedia>
+            <EmptyTitle>暂无项目</EmptyTitle>
+            <EmptyDescription>先创建一个项目，再进入对应的需求和任务。</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent className="text-muted-foreground">
+            你可以点击右上角“新建项目”开始。
+          </EmptyContent>
+        </Empty>
+      ) : null}
     </main>
   )
 }

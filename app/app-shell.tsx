@@ -73,6 +73,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     previousHrefRef.current = currentHref
   }, [pathname])
 
+  React.useEffect(() => {
+    // 空间切换、迁移或删除后直接整页刷新，保证右侧页面读取到新的空间数据库和插件目录。
+    const unsubscribeSpaces = window.horaDB?.onSpacesChanged?.(() => {
+      window.location.reload()
+    })
+
+    return () => {
+      unsubscribeSpaces?.()
+    }
+  }, [])
+
   // 开始拖拽：按鼠标 X 计算新宽度。
   const handleResizeStart = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault()

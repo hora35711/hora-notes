@@ -23,6 +23,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DatePickerField } from "@/components/date-picker-field"
 import {
@@ -97,9 +98,24 @@ const ALL_FILTER_VALUE = "__all__"
 
 type ProjectViewMode = "list" | "board" | "gantt"
 
+type ProjectFocusTarget = {
+  kind: "requirement" | "task"
+  id: string
+}
+
 function normalizeProjectView(value: string | null) {
   if (value === "list" || value === "board" || value === "gantt") return value
   if (value === "cards") return "board"
+  return null
+}
+
+// dashboard 或任务页跳进来时，会带一个 focus 参数，把目标行锁定到当前页面。
+function parseProjectFocus(value: string | null): ProjectFocusTarget | null {
+  if (!value) return null
+  const [kind, id] = value.split(":")
+  if ((kind === "requirement" || kind === "task") && id) {
+    return { kind, id }
+  }
   return null
 }
 
@@ -166,6 +182,7 @@ export default function ProjectDetailPage() {
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all")
   const [connectionLines, setConnectionLines] = useState<ConnectionLine[]>([])
   const [highlightedLineIds, setHighlightedLineIds] = useState<string[]>([])
+  const [focusTarget, setFocusTarget] = useState<ProjectFocusTarget | null>(null)
   const [draggedRequirementId, setDraggedRequirementId] = useState<string | null>(null)
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -218,16 +235,18 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     const requestedView = normalizeProjectView(searchParams.get("view"))
+    const requestedFocus = parseProjectFocus(searchParams.get("focus"))
     const savedState = loadStoredProjectUiState(projectId)
     const nextViewMode = savedState.viewMode === "task" || savedState.viewMode === "requirement" ? savedState.viewMode : "task"
     const nextStatusFilter = savedState.statusFilter || "all"
     const nextPriorityFilter = savedState.priorityFilter || "all"
-    const nextLayoutMode = requestedView || savedState.layoutMode || "list"
+    const nextLayoutMode = requestedFocus ? "list" : requestedView || savedState.layoutMode || "list"
 
     setViewMode(nextViewMode)
     setStatusFilter(nextStatusFilter)
     setPriorityFilter(nextPriorityFilter)
     setLayoutMode(nextLayoutMode)
+    setFocusTarget(requestedFocus)
 
     const run = async () => {
       try {
@@ -599,6 +618,35 @@ export default function ProjectDetailPage() {
     flashLines([`${task.requirementId}:${task.id}`])
   }
 
+  useEffect(() => {
+    if (!focusTarget) return
+
+    const targetEl =
+      focusTarget.kind === "requirement"
+        ? requirementNodeRefs.current[focusTarget.id]
+        : taskNodeRefs.current[focusTarget.id]
+
+    if (!targetEl) return
+
+    const timer = window.setTimeout(() => {
+      // 先滚到目标，再亮一下关联线，方便从 dashboard 一眼找到对应内容。
+      targetEl.scrollIntoView({ behavior: "smooth", block: "center" })
+      if (focusTarget.kind === "requirement") {
+        handleFlashRequirement(focusTarget.id)
+        setFocusTarget(null)
+        return
+      }
+
+      const task = tasks.find((row) => row.id === focusTarget.id)
+      if (task) {
+        handleFlashTask(task)
+        setFocusTarget(null)
+      }
+    }, 80)
+
+    return () => window.clearTimeout(timer)
+  }, [focusTarget, handleFlashRequirement, handleFlashTask, tasks])
+
   const handleExportProjectToNote = async () => {
     if (!project) return
 
@@ -932,7 +980,7 @@ export default function ProjectDetailPage() {
                 stroke={line.color}
                 strokeOpacity={highlightedLineIds.includes(line.id) ? "0.95" : "0.45"}
                 strokeWidth={highlightedLineIds.includes(line.id) ? "4" : "2"}
-                className={highlightedLineIds.includes(line.id) ? "animate-pulse" : ""}
+                className={highlightedLineIds.includes(line.id) ? "drop-shadow-[0_0_6px_rgba(59,130,246,0.35)]" : ""}
               />
             ))}
           </svg>
@@ -1433,11 +1481,15 @@ function RequirementList(props: {
         )
       })}
       {props.rows.length === 0 ? (
-        <Card className="border-dashed bg-background">
-          <CardContent className="px-3 py-6 text-center text-sm text-muted-foreground">
-            暂无需求。
-          </CardContent>
-        </Card>
+        <Empty className="rounded-xl border border-dashed bg-background py-8">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Plus className="size-4" />
+            </EmptyMedia>
+            <EmptyTitle>暂无需求</EmptyTitle>
+            <EmptyDescription>先创建一个需求，再给它挂任务。</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : null}
     </div>
   )
@@ -1555,11 +1607,15 @@ function TaskList(props: {
         )
       })}
       {props.rows.length === 0 ? (
-        <Card className="border-dashed bg-background">
-          <CardContent className="px-3 py-6 text-center text-sm text-muted-foreground">
-            暂无任务。
-          </CardContent>
-        </Card>
+        <Empty className="rounded-xl border border-dashed bg-background py-8">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Plus className="size-4" />
+            </EmptyMedia>
+            <EmptyTitle>暂无任务</EmptyTitle>
+            <EmptyDescription>先创建一个任务，或者调整筛选条件。</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : null}
     </div>
   )

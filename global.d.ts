@@ -71,6 +71,15 @@ type LinkedNoteRecord = {
   updatedAt: string
 }
 
+type SpaceRecord = {
+  id: string
+  name: string
+  rootPath: string
+  createdAt: string
+  updatedAt: string
+  lastOpenedAt: string | null
+}
+
 type PluginUiMode = "editor" | "display" | "panel"
 
 type PluginModuleRecord = {
@@ -206,6 +215,25 @@ type HoraDBBridge = {
   getPluginRootPath: () => Promise<string>
   importPluginPackage: () => Promise<{ imported: boolean; reason?: string; targetDir?: string; restartRecommended?: boolean; plugins?: PluginRecord[] }>
   restartApp: () => Promise<boolean>
+  getSpaceBootstrapState: () => Promise<{
+    currentSpace: SpaceRecord | null
+    spaces: SpaceRecord[]
+    bootstrapRequired: boolean
+  }>
+  listSpaces: () => Promise<SpaceRecord[]>
+  getCurrentSpace: () => Promise<SpaceRecord | null>
+  pickSpaceDirectory: (input?: { defaultPath?: string }) => Promise<{ canceled: boolean; filePath: string }>
+  createSpace: (input: { name: string; rootPath: string }) => Promise<SpaceRecord>
+  switchSpace: (spaceId: string) => Promise<SpaceRecord>
+  renameSpace: (input: { spaceId: string; name: string }) => Promise<SpaceRecord>
+  deleteSpace: (spaceId: string) => Promise<boolean>
+  migrateCurrentSpace: (input: { rootPath: string }) => Promise<SpaceRecord>
+  reloadSpaceRuntime: () => Promise<{
+    currentSpace: SpaceRecord | null
+    spaces: SpaceRecord[]
+    bootstrapRequired: boolean
+  }>
+  onSpacesChanged: (callback: () => void) => (() => void) | undefined
 }
 
 declare global {

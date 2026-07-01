@@ -58,6 +58,24 @@ export type LinkedNoteRecord = {
   updatedAt: string
 }
 
+// 笔记记录：用于 dashboard 读取笔记更新时间和标题。
+export type NoteRecord = {
+  id: string
+  title: string
+  nodeType: "folder" | "file"
+  filePath: string | null
+  updatedAt: string
+}
+
+export type SpaceRecord = {
+  id: string
+  name: string
+  rootPath: string
+  createdAt: string
+  updatedAt: string
+  lastOpenedAt: string | null
+}
+
 export type PluginUiMode = "editor" | "display" | "panel"
 
 export type PluginModuleRecord = {
@@ -270,6 +288,13 @@ export async function listNotesByProject(projectId: string): Promise<LinkedNoteR
   return []
 }
 
+export async function getNote(noteId: string): Promise<NoteRecord | null> {
+  if (typeof window !== "undefined" && window.horaDB?.getNote) {
+    return window.horaDB.getNote(noteId)
+  }
+  return null
+}
+
 export async function listPlugins(): Promise<PluginRecord[]> {
   if (typeof window !== "undefined" && window.horaDB?.listPlugins) return window.horaDB.listPlugins()
   return []
@@ -324,6 +349,66 @@ export async function importPluginPackage() {
 
 export async function restartApp() {
   return requireHoraDB().restartApp()
+}
+
+export async function getSpaceBootstrapState(): Promise<{
+  currentSpace: SpaceRecord | null
+  spaces: SpaceRecord[]
+  bootstrapRequired: boolean
+}> {
+  if (typeof window !== "undefined" && window.horaDB?.getSpaceBootstrapState) {
+    return window.horaDB.getSpaceBootstrapState()
+  }
+  return { currentSpace: null, spaces: [], bootstrapRequired: false }
+}
+
+export async function listSpaces(): Promise<SpaceRecord[]> {
+  if (typeof window !== "undefined" && window.horaDB?.listSpaces) return window.horaDB.listSpaces()
+  return []
+}
+
+export async function getCurrentSpace(): Promise<SpaceRecord | null> {
+  if (typeof window !== "undefined" && window.horaDB?.getCurrentSpace) return window.horaDB.getCurrentSpace()
+  return null
+}
+
+export async function pickSpaceDirectory(input?: { defaultPath?: string }) {
+  if (typeof window !== "undefined" && window.horaDB?.pickSpaceDirectory) return window.horaDB.pickSpaceDirectory(input)
+  return { canceled: true, filePath: "" }
+}
+
+export async function createSpace(input: { name: string; rootPath: string }) {
+  const result = await requireHoraDB().createSpace(input)
+  notifyHoraDbUpdated("space")
+  return result
+}
+
+export async function switchSpace(spaceId: string) {
+  const result = await requireHoraDB().switchSpace(spaceId)
+  notifyHoraDbUpdated("space")
+  return result
+}
+
+export async function renameSpace(input: { spaceId: string; name: string }) {
+  const result = await requireHoraDB().renameSpace(input)
+  notifyHoraDbUpdated("space")
+  return result
+}
+
+export async function deleteSpace(spaceId: string) {
+  const result = await requireHoraDB().deleteSpace(spaceId)
+  notifyHoraDbUpdated("space")
+  return result
+}
+
+export async function migrateCurrentSpace(input: { rootPath: string }) {
+  const result = await requireHoraDB().migrateCurrentSpace(input)
+  notifyHoraDbUpdated("space")
+  return result
+}
+
+export async function reloadSpaceRuntime() {
+  return requireHoraDB().reloadSpaceRuntime()
 }
 
 export async function listNoteNodes(): Promise<NoteNodeRow[]> {
